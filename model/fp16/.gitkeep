@@ -1,0 +1,5 @@
+# 放置 FP16 模型文件:
+#   model.ncnn.param  — NCNN 模型结构
+#   model.ncnn.bin    — NCNN 模型权重
+#
+# 生成方式: yolo export model=best.pt format=ncnn imgsz=320 half=True

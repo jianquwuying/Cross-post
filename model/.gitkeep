@@ -1,0 +1,2 @@
+# Place model.ncnn.param and model.ncnn.bin here.
+# Generated via: yolo export model=best.pt format=ncnn imgsz=320

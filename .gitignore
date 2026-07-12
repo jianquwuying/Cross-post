@@ -1,0 +1,40 @@
+# 构建产物
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+*.cmake
+!CMakeLists.txt
+Makefile
+*.o
+*.a
+*.so
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 模型文件（大型二进制文件 — 单独存储）
+model/*.bin
+model/*.param
+model/*.pt
+model/*.onnx
+!model/.gitkeep
+
+# 训练产物
+runs/
+*.pt
+*.pth
+__pycache__/
+*.pyc
+.conda/
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 可执行文件
+vision_system

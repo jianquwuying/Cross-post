@@ -1,0 +1,9 @@
+# 放置 INT8 量化模型文件:
+#   model.ncnn.param    — NCNN 模型结构
+#   model.ncnn.bin      — NCNN 量化权重
+#   calibration.table   — 校准表（可选，已嵌入模型）
+#
+# 生成方式:
+# 1. yolo export model=best.pt format=ncnn imgsz=320
+# 2. ncnn2table model.ncnn.param model.ncnn.bin calib_images/ calibration.table
+# 3. ncnn2int8 model.ncnn.param model.ncnn.bin calibration.table int8_model.param int8_model.bin
