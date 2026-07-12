@@ -1,57 +1,89 @@
 # ═══════════════════════════════════════════════════════════════════
-#  视觉识别系统 — Demo 配置文件 (视频推理模式)
-#  修改 input.type 切换输入源: "camera" | "video"
+#  视觉识别系统 — 统一配置文件
+#  修改此文件无需重新编译
 # ═══════════════════════════════════════════════════════════════════
 
 # ── 输入源选择 ──────────────────────────────────────────────────
 input:
-  type: "video"          # "camera" (实时摄像头) | "video" (离线视频文件)
+  type: "camera"          # "camera" (实时摄像头) | "video" (离线视频文件)
 
 # ── 摄像头参数 (input.type=camera 时生效) ───────────────────────
 camera:
-  id: 0
-  width: 1280
-  height: 720
-  fps: 60
+  id: 0                   # /dev/videoX
+  width: 640
+  height: 480
+  fps: 30
+  fourcc: "MJPG"          # MJPEG (低CPU) 或 YUYV
+  buffer_size: 1          # V4L2缓冲数 (1=最低延迟)
 
 # ── 视频参数 (input.type=video 时生效) ──────────────────────────
 video:
   path: "./data/test.mp4"
-  loop: false            # 播放结束后是否循环
+  loop: false             # 播放结束后是否循环
 
-# ── YOLO 检测参数 ──────────────────────────────────────────────
+# ── YOLO 检测配置 ──────────────────────────────────────────────
 yolo:
-  model_dir: "model"
-  model_type: "int8"     # "fp16" | "int8"
+  model_dir: "model"      # 模型根目录
+  model_type: "int8"      # "fp16" (高精度) | "int8" (高速度)
   input_width: 320
   input_height: 320
+  num_classes: 2
   num_threads: 4
   conf_threshold: 0.25
   nms_threshold: 0.45
 
-# ── HSV 颜色识别参数 ───────────────────────────────────────────
-color:
-  threshold: 0.15
-  conf_threshold: 0.15
+# ── 检测控制 ───────────────────────────────────────────────────
+detect:
+  skip_frames: 0          # 0=每帧检测, 1=隔帧, 2=每3帧...
 
-# ── ROI 裁剪参数 ───────────────────────────────────────────────
+# ── ROI 区域裁剪 ───────────────────────────────────────────────
 roi:
-  enabled: false
+  enabled: false          # 是否启用ROI裁剪
   x: 0
   y: 0
   width: 640
   height: 480
 
-# ── 显示参数 ───────────────────────────────────────────────────
+# ── HSV 颜色识别 ───────────────────────────────────────────────
+color:
+  threshold: 0.15         # 颜色判定像素占比阈值
+  conf_threshold: 0.15    # 颜色置信度最低阈值
+  morph_kernel: 3         # 形态学核大小
+  blur_kernel: 3          # 高斯模糊核大小
+
+  # 红色 — 两个范围 (hue在0°/180°处环绕)
+  red1:  { h_low: 0,   s_low: 100, v_low: 100, h_high: 10,  s_high: 255, v_high: 255 }
+  red2:  { h_low: 170, s_low: 100, v_low: 100, h_high: 180, s_high: 255, v_high: 255 }
+
+  # 蓝色
+  blue:  { h_low: 100, s_low: 100, v_low: 50,  h_high: 130, s_high: 255, v_high: 255 }
+
+  # 黄色
+  yellow:{ h_low: 20,  s_low: 100, v_low: 100, h_high: 35,  s_high: 255, v_high: 255 }
+
+# ── 串口配置 ──────────────────────────────────────────────────
+serial:
+  device: "/dev/ttyAMA0"
+  baudrate: 115200
+  data_bits: 8
+  stop_bits: 1
+  parity: "N"
+
+# ── 显示参数 (vision_demo 使用) ────────────────────────────────
 display:
   enable: true
   window_name: "YOLO26n Vision"
 
-# ── 输出参数 ───────────────────────────────────────────────────
+# ── 输出参数 (vision_demo 使用) ────────────────────────────────
 output:
-  save_video: false      # 是否保存结果视频
+  save_video: false       # 是否保存结果视频
   path: "./result.mp4"
 
-# ── Benchmark 参数 ─────────────────────────────────────────────
+# ── Benchmark (vision_demo 使用) ───────────────────────────────
 benchmark:
-  enable: true           # 是否在结束时输出性能统计
+  enable: true            # 是否在结束时输出性能统计
+
+# ── 日志配置 ──────────────────────────────────────────────────
+log:
+  level: "info"           # "debug" | "info" | "warn" | "error"
+  use_color: true         # 是否使用终端ANSI颜色

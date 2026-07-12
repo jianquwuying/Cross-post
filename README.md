@@ -107,66 +107,73 @@ model/
 
 ## 配置说明
 
-### 生产配置 (`config/default.yaml`)
+所有配置由单一文件 `config/vision.yaml` 控制，修改无需重编译。通过 `input.type` 切换运行模式。
 
 ```yaml
-camera:          # 摄像头参数
-  device_id: 0
-  width: 640
-  height: 480
-  fps: 30
+# ── 输入源选择 ──────────────────────────
+input:
+  type: "camera"          # "camera" | "video"
 
-yolo:            # 推理参数
+# ── 摄像头 (input.type=camera) ──────────
+camera:
+  id: 0; width: 640; height: 480; fps: 30
+  fourcc: "MJPG"; buffer_size: 1
+
+# ── 视频 (input.type=video) ─────────────
+video:
+  path: "./data/test.mp4"
+  loop: false
+
+# ── YOLO 推理 ──────────────────────────
+yolo:
   model_dir: "model"
-  model_type: "fp16"      # fp16 | int8
-  input_width: 320
-  input_height: 320
+  model_type: "int8"      # fp16 | int8
+  input_width: 320; input_height: 320
   num_threads: 4
-  conf_threshold: 0.25
-  nms_threshold: 0.45
+  conf_threshold: 0.25; nms_threshold: 0.45
 
-roi:             # ROI 裁剪 (可选)
+# ── 检测控制 ──────────────────────────
+detect:
+  skip_frames: 0
+
+# ── ROI 裁剪 ──────────────────────────
+roi:
   enabled: false
   x: 0; y: 0; width: 640; height: 480
 
-color:           # HSV 颜色识别
-  threshold: 0.15         # 颜色判定阈值
-  conf_threshold: 0.15    # 颜色置信度最低阈值
+# ── HSV 颜色识别 ──────────────────────
+color:
+  threshold: 0.15; conf_threshold: 0.15
+  morph_kernel: 3; blur_kernel: 3
   red1:  { h_low: 0,   s_low: 100, v_low: 100, h_high: 10,  s_high: 255, v_high: 255 }
   red2:  { h_low: 170, s_low: 100, v_low: 100, h_high: 180, s_high: 255, v_high: 255 }
   blue:  { h_low: 100, s_low: 100, v_low: 50,  h_high: 130, s_high: 255, v_high: 255 }
   yellow:{ h_low: 20,  s_low: 100, v_low: 100, h_high: 35,  s_high: 255, v_high: 255 }
 
-serial:          # 串口参数
-  device: "/dev/ttyAMA0"
-  baudrate: 115200
-```
+# ── 串口 ──────────────────────────────
+serial:
+  device: "/dev/ttyAMA0"; baudrate: 115200
+  data_bits: 8; stop_bits: 1; parity: "N"
 
-### Demo 配置 (`config/vision.yaml`)
-
-```yaml
-input:           # 输入源选择
-  type: "video"          # camera | video
-
-camera:
-  id: 0; width: 1280; height: 720; fps: 60
-
-video:
-  path: "./data/test.mp4"
-  loop: false
-
+# ── 显示 (vision_demo) ──────────────────
 display:
   enable: true
+  window_name: "YOLO26n Vision"
 
+# ── 输出 (vision_demo) ──────────────────
 output:
-  save_video: false
-  path: "./result.mp4"
+  save_video: false; path: "./result.mp4"
 
+# ── Benchmark (vision_demo) ─────────────
 benchmark:
   enable: true
+
+# ── 日志 ──────────────────────────────
+log:
+  level: "info"; use_color: true
 ```
 
-输入源由 `input.type` 决定，切换 camera ↔ video 无需重编译。
+两个程序共用同一配置文件。`vision_system` 忽略 display/output/benchmark 节 (无串口时自动降级)。`vision_demo` 忽略 serial 节。
 
 ---
 
@@ -234,8 +241,7 @@ Cross-post/
 │   └── protocol.h                  # 12字节二进制协议 + CRC8
 ├── config/
 │   ├── config.h/cpp                # YAML 配置管理
-│   ├── default.yaml                # 生产配置
-│   └── vision.yaml                 # Demo 配置
+│   └── vision.yaml                 # 统一配置文件
 ├── roi/
 │   └── roi.h/cpp                   # ROI 裁剪 + 坐标映射
 ├── logger/
@@ -285,6 +291,7 @@ CPU 胜出: ARM CPU 方案成熟稳定、驱动依赖少、便于调试。树莓
 | v1.0 | 2026-07-11 | 基础框架: Camera → YOLO → HSV → Serial |
 | v1.1 | 2026-07-12 | 7项优化: 颜色置信度/ROI/YAML/FP16+INT8/Logger/多目标/数据增强 |
 | v1.2 | 2026-07-12 | 视频推理: FrameSource 抽象/VideoSource/vision_demo/Benchmark |
+| v1.3 | 2026-07-12 | YAML 合并: default.yaml + vision.yaml → 单一 vision.yaml |
 
 ---
 

@@ -310,14 +310,14 @@ int main(int argc, char* argv[]) {
     std::signal(SIGTERM, signalHandler);
 
     // ── 解析 --config 和 --help（需要在 YAML 加载前处理） ─────
-    std::string configPath = "config/default.yaml";
+    std::string configPath = "config/vision.yaml";
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--config" && i + 1 < argc) {
             configPath = argv[++i];
         }
         if (std::string(argv[i]) == "--help" || std::string(argv[i]) == "-h") {
             std::cout << "用法: " << argv[0] << " [选项]\n"
-                      << "  --config  PATH   YAML配置文件路径 (默认: config/default.yaml)\n"
+                      << "  --config  PATH   YAML配置文件路径 (默认: config/vision.yaml)\n"
                       << "  --model   TYPE   模型类型: fp16 | int8 (默认: fp16)\n"
                       << "  --serial  DEV    串口设备 (默认: /dev/ttyAMA0)\n"
                       << "  --baud    RATE   波特率 (默认: 115200)\n"
