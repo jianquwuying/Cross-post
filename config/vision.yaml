@@ -1,0 +1,57 @@
+# ═══════════════════════════════════════════════════════════════════
+#  视觉识别系统 — Demo 配置文件 (视频推理模式)
+#  修改 input.type 切换输入源: "camera" | "video"
+# ═══════════════════════════════════════════════════════════════════
+
+# ── 输入源选择 ──────────────────────────────────────────────────
+input:
+  type: "video"          # "camera" (实时摄像头) | "video" (离线视频文件)
+
+# ── 摄像头参数 (input.type=camera 时生效) ───────────────────────
+camera:
+  id: 0
+  width: 1280
+  height: 720
+  fps: 60
+
+# ── 视频参数 (input.type=video 时生效) ──────────────────────────
+video:
+  path: "./data/test.mp4"
+  loop: false            # 播放结束后是否循环
+
+# ── YOLO 检测参数 ──────────────────────────────────────────────
+yolo:
+  model_dir: "model"
+  model_type: "int8"     # "fp16" | "int8"
+  input_width: 320
+  input_height: 320
+  num_threads: 4
+  conf_threshold: 0.25
+  nms_threshold: 0.45
+
+# ── HSV 颜色识别参数 ───────────────────────────────────────────
+color:
+  threshold: 0.15
+  conf_threshold: 0.15
+
+# ── ROI 裁剪参数 ───────────────────────────────────────────────
+roi:
+  enabled: false
+  x: 0
+  y: 0
+  width: 640
+  height: 480
+
+# ── 显示参数 ───────────────────────────────────────────────────
+display:
+  enable: true
+  window_name: "YOLO26n Vision"
+
+# ── 输出参数 ───────────────────────────────────────────────────
+output:
+  save_video: false      # 是否保存结果视频
+  path: "./result.mp4"
+
+# ── Benchmark 参数 ─────────────────────────────────────────────
+benchmark:
+  enable: true           # 是否在结束时输出性能统计

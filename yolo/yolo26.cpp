@@ -41,12 +41,10 @@ bool YOLO26Detector::load(const Config& config) {
     config_.binPath   = config_.modelDir + "/" + subdir + "/model.ncnn.bin";
 
     // ── 配置 NCNN 选项 ─────────────────────────────────────────
-    net_.opt.use_vulkan_compute = config_.useVulkan;
-    if (config_.useVulkan) {
-        std::cout << "[YOLO] Vulkan 计算已启用" << std::endl;
-    }
+    // 默认使用 CPU + NEON + OpenMP, 不启用 Vulkan
+    net_.opt.use_vulkan_compute = false;
 
-    // CPU 线程数
+    // CPU 线程数 (OpenMP 多线程)
     net_.opt.num_threads = config_.numThreads;
 
     // 根据模型类型设置不同的优化标志
@@ -73,7 +71,7 @@ bool YOLO26Detector::load(const Config& config) {
     std::cout << "[YOLO] 加载模型: " << config_.paramPath << std::endl;
     std::cout << "[YOLO]   类型=" << modelTypeStr(config_.modelType)
               << " 线程数=" << config_.numThreads
-              << " Vulkan=" << (config_.useVulkan ? "是" : "否")
+              << " 后端=CPU+NEON+OpenMP"
               << std::endl;
 
     // ── 加载模型文件 ───────────────────────────────────────────

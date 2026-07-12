@@ -22,7 +22,6 @@ yolo:
   num_threads: 4
   conf_threshold: 0.25
   nms_threshold: 0.45
-  use_vulkan: false     # 启用 Vulkan GPU 加速
 
 # ── 检测控制 ───────────────────────────────────────────────────
 detect:

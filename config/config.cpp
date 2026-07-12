@@ -48,7 +48,6 @@ AppConfig AppConfig::load(const std::string& yamlPath) {
             YAML_READ_INT(y, num_threads, cfg.yolo.numThreads);
             YAML_READ_FLOAT(y, conf_threshold, cfg.yolo.confThreshold);
             YAML_READ_FLOAT(y, nms_threshold, cfg.yolo.nmsThreshold);
-            YAML_READ_BOOL(y, use_vulkan, cfg.yolo.useVulkan);
         }
 
         // ── 检测 ────────────────────────────────────────────
@@ -163,10 +162,6 @@ void AppConfig::applyCliOverrides(int argc, char* argv[]) {
         else if (arg == "--conf" && i + 1 < argc) {
             yolo.confThreshold = std::stof(argv[++i]);
         }
-        // Vulkan
-        else if (arg == "--vulkan") {
-            yolo.useVulkan = true;
-        }
         // 日志级别
         else if (arg == "--log-level" && i + 1 < argc) {
             log.level = argv[++i];
@@ -196,7 +191,7 @@ void AppConfig::print() const {
               << " 线程=" << yolo.numThreads
               << " 置信度=" << yolo.confThreshold
               << " NMS=" << yolo.nmsThreshold
-              << " Vulkan=" << (yolo.useVulkan ? "是" : "否") << "\n";
+              << " 后端=CPU+NEON+OpenMP\n";
 
     std::cout << "[检测] 跳帧=" << detect.skipFrames << "\n";
 

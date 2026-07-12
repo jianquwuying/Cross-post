@@ -78,8 +78,6 @@ public:
         int    numThreads       = 4;         ///< ncnn 线程数
         float  confThreshold    = 0.25f;     ///< 置信度阈值
         float  nmsThreshold     = 0.45f;     ///< NMS IoU 阈值
-        bool   useVulkan        = false;     ///< 启用 Vulkan 计算
-        int    gpuDevice        = 0;         ///< Vulkan 设备索引
     };
 
     YOLO26Detector();

@@ -34,7 +34,6 @@ struct AppConfig {
         int    numThreads       = 4;
         float  confThreshold    = 0.25f;
         float  nmsThreshold     = 0.45f;
-        bool   useVulkan        = false;
     } yolo;
 
     // ── 检测控制 ──────────────────────────────────────────────

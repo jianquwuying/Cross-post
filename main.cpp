@@ -325,7 +325,6 @@ int main(int argc, char* argv[]) {
                       << "  --size    PIX    模型输入尺寸 (默认: 320)\n"
                       << "  --threads N      NCNN线程数 (默认: 4)\n"
                       << "  --conf    F      置信度阈值 (默认: 0.25)\n"
-                      << "  --vulkan         启用 Vulkan GPU 推理\n"
                       << "  --log-level LVL  日志级别: debug|info|warn|error (默认: info)\n"
                       << "  --help, -h       显示本帮助信息\n"
                       << "\n所有参数也可通过 YAML 配置文件设置。\n";
@@ -361,7 +360,6 @@ int main(int argc, char* argv[]) {
     ycfg.numThreads    = cfg.yolo.numThreads;
     ycfg.confThreshold = cfg.yolo.confThreshold;
     ycfg.nmsThreshold  = cfg.yolo.nmsThreshold;
-    ycfg.useVulkan     = cfg.yolo.useVulkan;
 
     YOLO26Detector yolo;
     if (!yolo.load(ycfg)) {

@@ -108,6 +108,64 @@ target_compile_options(${PROJECT_NAME} PRIVATE
     $<$<CONFIG:Release>:-O3 -march=native -flto>
 )
 
+# ── 第二个可执行文件: vision_demo (视频推理 Demo) ──────────────────
+set(DEMO_SOURCES
+    src/vision_demo.cpp
+    camera/camera.cpp
+    yolo/yolo26.cpp
+    color/hsv.cpp
+    roi/roi.cpp
+    logger/logger.cpp
+    src/input/frame_source_factory.cpp
+)
+
+set(DEMO_HEADERS
+    src/input/frame_source.hpp
+    src/input/camera_source.hpp
+    src/input/video_source.hpp
+    src/input/frame_source_factory.hpp
+    yolo/yolo26.h
+    color/hsv.h
+    roi/roi.h
+    logger/logger.h
+    camera/camera.h
+)
+
+add_executable(vision_demo ${DEMO_SOURCES} ${DEMO_HEADERS})
+
+target_include_directories(vision_demo PRIVATE
+    ${CMAKE_SOURCE_DIR}
+    ${OpenCV_INCLUDE_DIRS}
+)
+
+# NCNN include
+if(NCNN_INCLUDE_DIRS)
+    target_include_directories(vision_demo PRIVATE ${NCNN_INCLUDE_DIRS})
+elseif(ncnn_INCLUDE_DIRS)
+    target_include_directories(vision_demo PRIVATE ${ncnn_INCLUDE_DIRS})
+else()
+    target_include_directories(vision_demo PRIVATE /usr/local/include/ncnn)
+endif()
+
+# yaml-cpp include
+if(YAMLCPP_INCLUDE_DIRS)
+    target_include_directories(vision_demo PRIVATE ${YAMLCPP_INCLUDE_DIRS})
+elseif(yaml-cpp_INCLUDE_DIRS)
+    target_include_directories(vision_demo PRIVATE ${yaml-cpp_INCLUDE_DIRS})
+endif()
+
+target_link_libraries(vision_demo PRIVATE
+    ${OpenCV_LIBS}
+    ncnn
+    yaml-cpp
+    pthread
+)
+
+target_compile_options(vision_demo PRIVATE
+    -Wall -Wextra
+    $<$<CONFIG:Release>:-O3 -march=native -flto>
+)
+
 # ── 安装规则 ──────────────────────────────────────────────────────
 install(TARGETS ${PROJECT_NAME} DESTINATION bin)
 install(FILES ${HEADERS} DESTINATION include/${PROJECT_NAME})
