@@ -1,0 +1,23 @@
+# ═══════════════════════════════════════════════════════════════════
+#  Dataset Capture — 原始数据集采集工具配置
+# ═══════════════════════════════════════════════════════════════════
+
+camera:
+  device: 0               # /dev/videoX
+  width: 1280
+  height: 720
+  fps: 30
+
+capture:
+  enable: true            # 是否启用自动采集
+  interval_ms: 100        # 自动保存间隔 (毫秒) — 10FPS
+  save_dir: "./dataset"   # 图片保存目录
+  prefix: "img"           # 文件名前缀
+  format: "jpg"           # 图片格式
+  jpeg_quality: 95        # JPEG 质量 (1-100)
+
+display:
+  enable: true            # 是否显示画面
+  show_window: true       # 是否创建窗口
+  show_fps: true          # 左上角显示FPS
+  show_saved_count: true  # 左上角显示已保存数量

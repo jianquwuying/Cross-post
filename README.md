@@ -70,12 +70,13 @@ cmake -DCMAKE_BUILD_TYPE=Release ..
 make -j4
 ```
 
-产出两个可执行文件:
+产出三个可执行文件:
 
 | 程序 | 用途 |
 |------|------|
 | `vision_system` | 生产部署: 摄像头 + YOLO + HSV + 串口 |
 | `vision_demo` | 离线调试: 摄像头/视频 + YOLO + HSV + 显示 + 录像 |
+| `dataset_capture` | 数据集采集: 摄像头原始图片保存, 用于 YOLO 标注 |
 
 ### 3. 放置模型
 
@@ -101,6 +102,11 @@ model/
 # Demo 模式 (显示+录像+Benchmark)
 ./vision_demo                                 # 使用 config/vision.yaml
 ./vision_demo --config config/vision.yaml     # input.type: camera | video
+
+# 数据集采集 (原始图片, 不推理)
+cd tools/dataset_capture && mkdir build && cd build
+cmake .. && make -j4
+./dataset_capture                             # 使用 vision.yaml
 ```
 
 ---
@@ -255,6 +261,12 @@ Cross-post/
 ├── model/
 │   ├── fp16/.gitkeep
 │   └── int8/.gitkeep
+├── tools/dataset_capture/          ⭐ v1.4 新增
+│   ├── CMakeLists.txt              # 独立构建 (OpenCV + yaml-cpp)
+│   ├── main.cpp                    # 入口
+│   ├── config.h/cpp                # 轻量配置
+│   ├── dataset_capture.h/cpp       # 采集类 (增量保存/快捷键/叠加显示)
+│   └── vision.yaml                 # 默认配置
 └── README.md
 ```
 
@@ -292,6 +304,7 @@ CPU 胜出: ARM CPU 方案成熟稳定、驱动依赖少、便于调试。树莓
 | v1.1 | 2026-07-12 | 7项优化: 颜色置信度/ROI/YAML/FP16+INT8/Logger/多目标/数据增强 |
 | v1.2 | 2026-07-12 | 视频推理: FrameSource 抽象/VideoSource/vision_demo/Benchmark |
 | v1.3 | 2026-07-12 | YAML 合并: default.yaml + vision.yaml → 单一 vision.yaml |
+| v1.4 | 2026-07-13 | Dataset Capture: 原始数据集采集工具 (独立构建, 不影响推理模块) |
 
 ---
 
