@@ -25,7 +25,8 @@ YOLO26n 目标检测 + HSV 颜色识别 + UART 串口通信，支持摄像头/�
 | 图像处理 | OpenCV 4.8 (BGR→HSV, 形态学, 绘制) |
 | 颜色识别 | HSV 掩膜 + 颜色置信度 (红/蓝/黄) |
 | 串口协议 | 12字节二进制包 + CRC8 校验 |
-| 配置管理 | YAML (yaml-cpp), 修改无需重编译 |
+| 摄像头控制 | CameraConfig YAML 驱动, V4L2 ioctl (曝光/白平衡/像素格式) |
+| 配置管理 | YAML (yaml-cpp), 严格解析, 缺失字段直接报错退出 |
 | 日志系统 | ANSI 4级彩色终端日志 |
 | 构建系统 | CMake 3.20+, C++17, ARM64 |
 
@@ -76,7 +77,7 @@ make -j4
 |------|------|
 | `vision_system` | 生产部署: 摄像头 + YOLO + HSV + 串口 |
 | `vision_demo` | 离线调试: 摄像头/视频 + YOLO + HSV + 显示 + 录像 |
-| `dataset_capture` | 数据集采集: 摄像头原始图片保存, 用于 YOLO 标注 |
+| `dataset_capture` | 数据集采集: 共用 Camera 类, 自动保存原始图片, 用于 YOLO 标注 |
 
 ### 3. 放置模型
 
@@ -115,39 +116,109 @@ cmake .. && make -j4
 
 所有配置由单一文件 `config/vision.yaml` 控制，修改无需重编译。通过 `input.type` 切换运行模式。
 
+### 摄像头参数 (CameraConfig)
+
+**所有字段必须完整填写，缺失直接报错退出。程序不设任何默认值。**
+
 ```yaml
 # ── 输入源选择 ──────────────────────────
 input:
   type: "camera"          # "camera" | "video"
 
-# ── 摄像头 (input.type=camera) ──────────
+# ── 摄像头 (input.type=camera 时生效) ──
 camera:
-  id: 0; width: 640; height: 480; fps: 30
-  fourcc: "MJPG"; buffer_size: 1
+  device: 0               # /dev/videoX 设备索引
+  backend: "V4L2"         # 后端: "V4L2" | "ANY"
+  width: 640              # 采集宽度
+  height: 480             # 采集高度
+  fps: 60                 # 目标帧率 (MJPG 下全分辨率可达 60fps)
+  fourcc: "MJPG"          # 像素格式: "MJPG" (低CPU/高帧率) | "YUYV" (未压缩/低帧率)
+  buffer_size: 1          # V4L2 缓冲区数量 (1=最低延迟)
+  auto_exposure: false    # true=自动曝光 | false=手动曝光
+  exposure: 156           # 手动曝光值 (1-10000), 仅 auto_exposure=false 时生效
+  auto_white_balance: false  # true=自动白平衡 | false=手动白平衡
+  white_balance: 4600     # 白平衡色温/Kelvin (2800-6500), 仅 auto_wb=false 时生效
+```
 
+启动后程序按顺序初始化:
+
+```
+Open /dev/videoX (V4L2)
+  → Set FourCC (MJPG/YUYV)
+  → Set Resolution
+  → Set FPS
+  → Set Buffer Size
+  → Set Exposure (auto/manual)
+  → Set White Balance (auto/manual, V4L2 ioctl)
+  → Verify & Print ANSI Table
+```
+
+示例输出:
+
+```
+┌──────────────────────────────────────────────────────┐
+│               Camera Parameters                      │
+├──────────┬──────────────┬──────────────┬─────────────┤
+│ Param    │ Requested    │ Actual       │ Status      │
+├──────────┼──────────────┼──────────────┼─────────────┤
+│ device   │ 0            │ 0            │ OK          │
+│ backend  │ V4L2         │ V4L2         │ OK          │
+│ fourcc   │ MJPG         │ MJPG         │ OK          │
+│ width    │ 640          │ 640          │ OK          │
+│ height   │ 480          │ 480          │ OK          │
+│ fps      │ 60           │ 60           │ OK          │
+│ buf_size │ 1            │ 1            │ OK          │
+│ auto_exp │ false        │ false        │ OK          │
+│ exposure │ 156          │ 166          │ WARN        │
+│ auto_wb  │ false        │ false        │ OK          │
+│ wb_temp  │ 4600         │ 4600         │ OK          │
+└──────────┴──────────────┴──────────────┴─────────────┘
+```
+
+`WARN` 表示驱动未完全支持请求值 (曝光在 V4L2 中为离散步进, 会就近取值)。
+
+### 视频参数
+
+```yaml
 # ── 视频 (input.type=video) ─────────────
 video:
   path: "./data/test.mp4"
   loop: false
+```
 
+### YOLO 检测
+
+```yaml
 # ── YOLO 推理 ──────────────────────────
 yolo:
   model_dir: "model"
   model_type: "int8"      # fp16 | int8
-  input_width: 320; input_height: 320
+  input_width: 320
+  input_height: 320
   num_threads: 4
-  conf_threshold: 0.25; nms_threshold: 0.45
+  conf_threshold: 0.25
+  nms_threshold: 0.45
+```
 
-# ── 检测控制 ──────────────────────────
+### 检测控制
+
+```yaml
 detect:
-  skip_frames: 0
+  skip_frames: 0          # 0=每帧检测, 1=隔帧, 2=每3帧
+```
 
-# ── ROI 裁剪 ──────────────────────────
+### ROI 裁剪
+
+```yaml
 roi:
   enabled: false
-  x: 0; y: 0; width: 640; height: 480
+  x: 0; y: 0
+  width: 640; height: 480
+```
 
-# ── HSV 颜色识别 ──────────────────────
+### HSV 颜色识别
+
+```yaml
 color:
   threshold: 0.15; conf_threshold: 0.15
   morph_kernel: 3; blur_kernel: 3
@@ -155,31 +226,65 @@ color:
   red2:  { h_low: 170, s_low: 100, v_low: 100, h_high: 180, s_high: 255, v_high: 255 }
   blue:  { h_low: 100, s_low: 100, v_low: 50,  h_high: 130, s_high: 255, v_high: 255 }
   yellow:{ h_low: 20,  s_low: 100, v_low: 100, h_high: 35,  s_high: 255, v_high: 255 }
+```
 
-# ── 串口 ──────────────────────────────
+### 串口
+
+```yaml
 serial:
   device: "/dev/ttyAMA0"; baudrate: 115200
   data_bits: 8; stop_bits: 1; parity: "N"
+```
 
-# ── 显示 (vision_demo) ──────────────────
+### 显示 & 输出 (vision_demo)
+
+```yaml
 display:
-  enable: true
-  window_name: "YOLO26n Vision"
+  enable: true; window_name: "YOLO26n Vision"
 
-# ── 输出 (vision_demo) ──────────────────
 output:
   save_video: false; path: "./result.mp4"
 
-# ── Benchmark (vision_demo) ─────────────
 benchmark:
   enable: true
-
-# ── 日志 ──────────────────────────────
-log:
-  level: "info"; use_color: true
 ```
 
-两个程序共用同一配置文件。`vision_system` 忽略 display/output/benchmark 节 (无串口时自动降级)。`vision_demo` 忽略 serial 节。
+### 日志
+
+```yaml
+log:
+  level: "info"           # debug | info | warn | error
+  use_color: true
+```
+
+三个程序共用同一套 `CameraConfig`。`vision_system` 忽略 display/output/benchmark 节，`vision_demo` 忽略 serial 节。
+
+---
+
+## 摄像头参数查询
+
+使用 `v4l2-ctl` 查看当前摄像头支持的格式和参数:
+
+```bash
+# 列出所有视频设备
+v4l2-ctl --list-devices
+
+# 查看全部参数 (当前格式、控制项等)
+v4l2-ctl -d /dev/video0 --all
+
+# 列出所有支持的分辨率/帧率组合
+v4l2-ctl -d /dev/video0 --list-formats-ext
+
+# 查看所有 controls 菜单
+v4l2-ctl -d /dev/video0 --list-ctrls-menus
+```
+
+当前硬件: USB Camera (uvcvideo), `/dev/video0`, S/N: 200901010001
+
+| 格式 | 最高分辨率@帧率 |
+|------|----------------|
+| MJPG | 1280×720 @ 60fps (全分辨率可达 60fps) |
+| YUYV | 1280×720 @ 10fps / 640×480 @ 30fps |
 
 ---
 
@@ -236,7 +341,9 @@ Cross-post/
 ├── CMakeLists.txt                  # 两个 target: vision_system + vision_demo
 ├── main.cpp                        # 生产流水线 (Camera → YOLO → HSV → Serial)
 ├── camera/
-│   └── camera.h/cpp                # V4L2 采集 (MJPEG/YUYV, EMA FPS)
+│   └── camera.h/cpp                # V4L2 采集封装: CameraConfig + Camera
+│                                   #   YAML驱动初始化, V4L2 ioctl白平衡/曝光
+│                                   #   参数验证+ANSI表格输出, EMA FPS
 ├── yolo/
 │   └── yolo26.h/cpp                # NCNN 推理 (3种输出格式, NMS, FP16/INT8)
 ├── color/
@@ -246,33 +353,49 @@ Cross-post/
 ├── protocol/
 │   └── protocol.h                  # 12字节二进制协议 + CRC8
 ├── config/
-│   ├── config.h/cpp                # YAML 配置管理
-│   └── vision.yaml                 # 统一配置文件
+│   ├── config.h/cpp                # YAML 配置管理 (摄像头段严格解析)
+│   └── vision.yaml                 # 统一配置文件 (所有模块共享)
 ├── roi/
 │   └── roi.h/cpp                   # ROI 裁剪 + 坐标映射
 ├── logger/
-│   └── logger.h/cpp                # ANSI 彩色日志 (4级)
+│   └── logger.h/cpp                # ANSI 彩色日志 (4级: debug/info/warn/error)
 ├── src/input/
 │   ├── frame_source.hpp            # FrameSource 抽象接口
-│   ├── camera_source.hpp           # CameraSource 实现
-│   ├── video_source.hpp            # VideoSource 实现 (支持循环)
+│   ├── camera_source.hpp           # CameraSource — 封装 Camera 类为 FrameSource
+│   ├── video_source.hpp            # VideoSource — 视频文件 (支持循环)
 │   └── frame_source_factory.hpp/cpp # 工厂: YAML → unique_ptr<FrameSource>
 ├── src/vision_demo.cpp             # Demo 程序 (显示/录像/Benchmark)
 ├── model/
 │   ├── fp16/.gitkeep
 │   └── int8/.gitkeep
-├── tools/dataset_capture/          ⭐ v1.4 新增
-│   ├── CMakeLists.txt              # 独立构建 (OpenCV + yaml-cpp)
+├── tools/dataset_capture/          ⭐ v1.5 重构
+│   ├── CMakeLists.txt              # 独立构建, 链接 camera/ + logger/
 │   ├── main.cpp                    # 入口
-│   ├── config.h/cpp                # 轻量配置
-│   ├── dataset_capture.h/cpp       # 采集类 (增量保存/快捷键/叠加显示)
-│   └── vision.yaml                 # 默认配置
+│   ├── config.h/cpp                # 采集+显示配置 (摄像头共用 CameraConfig)
+│   ├── dataset_capture.h/cpp       # 采集类: 使用 Camera 类, Logger 日志
+│   └── vision.yaml                 # 默认配置 (与主配置摄像头段一致)
 └── README.md
 ```
 
 ---
 
 ## 设计决策
+
+### CameraConfig — 单一真实数据源
+
+`CameraConfig` 是唯一摄像头配置结构体, 无任何 C++ 默认值。`vision_system`、`vision_demo` 和 `dataset_capture` 三个程序共用同一结构体和同一套 YAML 格式。YAML 缺失字段直接 `exit(1)`, 杜绝静默降级。
+
+### V4L2 直接 ioctl × 纯 OpenCV
+
+混合方案: 分辨率/FPS/像素格式/曝光 通过 OpenCV `cv::CAP_PROP_*` 设置 (已有成熟映射); 白平衡通过 V4L2 `VIDIOC_S_CTRL` ioctl 直接控制 (OpenCV 未封装 `CAP_PROP_AUTO_WB`)。
+
+### 严格 YAML 解析 × 默认值回退
+
+摄像头参数采用严格解析: `CameraConfig::fromYaml()` 检查每个字段是否存在, 缺失即 `exit(1)` 并打印明确错误信息。其他模块 (YOLO/HSV/串口) 保持 `IsDefined()` 默认值回退。
+
+### 参数验证 × 静默设置
+
+设置完成后通过 `cap_.get()` 和 `VIDIOC_G_CTRL` 读取实际值, 与 YAML 请求值逐项比对, 输出 ANSI 表格。不一致时标 `WARN` 而非静默忽略, 帮助排查驱动兼容性问题。
 
 ### YOLO26n × YOLO11n
 
@@ -305,6 +428,7 @@ CPU 胜出: ARM CPU 方案成熟稳定、驱动依赖少、便于调试。树莓
 | v1.2 | 2026-07-12 | 视频推理: FrameSource 抽象/VideoSource/vision_demo/Benchmark |
 | v1.3 | 2026-07-12 | YAML 合并: default.yaml + vision.yaml → 单一 vision.yaml |
 | v1.4 | 2026-07-13 | Dataset Capture: 原始数据集采集工具 (独立构建, 不影响推理模块) |
+| v1.5 | 2026-07-15 | Camera YAML Control: CameraConfig 统一配置, 零默认值, 严格解析, V4L2 ioctl 白平衡, 参数验证+ANSI 表格, dataset_capture 共用 Camera 类+Logger |
 
 ---
 
@@ -315,10 +439,11 @@ CPU 胜出: ARM CPU 方案成熟稳定、驱动依赖少、便于调试。树莓
 | 1 | `sudo apt install protobuf-compiler libprotobuf-dev libyaml-cpp-dev` | RPi5 | `dpkg -l \| grep yaml-cpp-dev` 有输出 |
 | 2 | 编译 NCNN (CPU + NEON + OpenMP) | RPi5 | `/usr/local/lib/libncnn.a` 存在 |
 | 3 | 连接摄像头, `v4l2-ctl --list-devices` 验证 | RPi5 | 能看到 `/dev/video0` |
-| 4 | 准备 A/B 两类标注数据集 (~500张/类) | 笔记本 | `data.yaml` + images + labels 齐全 |
-| 5 | 训练 `yolo detect train model=yolo26n.pt epochs=100 imgsz=320` | 笔记本 | mAP@0.5 > 0.85 |
-| 6 | 导出 NCNN: FP16 + INT8 → `model/fp16/` + `model/int8/` | 笔记本 | param + bin 文件就位 |
-| 7 | `cmake .. && make -j4 && ./vision_system --model int8` | RPi5 | 稳定输出检测结果 |
+| 4 | `v4l2-ctl -d /dev/video0 --list-formats-ext` 确认支持格式 | RPi5 | 确认 MJPG/YUYV 参数填入 YAML |
+| 5 | 准备 A/B 两类标注数据集 (~500张/类) | 笔记本 | `data.yaml` + images + labels 齐全 |
+| 6 | 训练 `yolo detect train model=yolo26n.pt epochs=100 imgsz=320` | 笔记本 | mAP@0.5 > 0.85 |
+| 7 | 导出 NCNN: FP16 + INT8 → `model/fp16/` + `model/int8/` | 笔记本 | param + bin 文件就位 |
+| 8 | `cmake .. && make -j4 && ./vision_system --model int8` | RPi5 | 启动输出 ANSI Camera 参数表格, 稳定检测 |
 
 ---
 
