@@ -1,5 +1,7 @@
 /// @file dataset_capture.cpp
-/// @brief DatasetCapture 完整实现 — 使用 Camera 类 + Logger 日志。
+/// @brief DatasetCapture 完整实现 — 图片采集 + 视频录制 + Camera 类 + Logger 日志。
+///
+/// 图片采集与视频录制共用同一帧, 互不干扰。
 
 #include "dataset_capture.h"
 #include "logger/logger.h"
@@ -13,11 +15,15 @@
 #include <iostream>
 #include <sstream>
 #include <thread>
+#include <ctime>
+
+namespace fs = std::filesystem;
 
 // ═══════════════════════════════════════════════════════════════════
 
 DatasetCapture::~DatasetCapture() {
     running_ = false;
+    ReleaseVideoWriter();
     camera_.release();
     cv::destroyAllWindows();
 }
@@ -32,10 +38,10 @@ bool DatasetCapture::Init(const YAML::Node& root) {
     }
     CameraConfig camCfg = CameraConfig::fromYaml(root["camera"]);
 
-    // 2. 加载采集/显示配置 (共用同一个 YAML::Node, 不重复读文件)
+    // 2. 加载采集/显示/视频配置 (共用同一个 YAML::Node, 不重复读文件)
     cfg_ = CaptureConfig::load(root);
 
-    LOG_INFO << "保存目录: " << cfg_.saveDir
+    LOG_INFO << "图片保存目录: " << cfg_.saveDir
              << "  间隔: " << cfg_.captureIntervalMs << "ms";
 
     // 3. 打开摄像头 (Camera 类会自动打印参数表格)
@@ -44,30 +50,100 @@ bool DatasetCapture::Init(const YAML::Node& root) {
         return false;
     }
 
-    // 4. 创建保存目录
+    // 4. 创建图片保存目录
     std::error_code ec;
-    if (!std::filesystem::exists(cfg_.saveDir)) {
-        std::filesystem::create_directories(cfg_.saveDir, ec);
+    if (!fs::exists(cfg_.saveDir)) {
+        fs::create_directories(cfg_.saveDir, ec);
         if (ec) {
-            LOG_ERROR << "无法创建目录: " << cfg_.saveDir
+            LOG_ERROR << "无法创建图片目录: " << cfg_.saveDir
                       << " (" << ec.message() << ")";
             return false;
         }
-        LOG_INFO << "目录已创建: " << cfg_.saveDir;
+        LOG_INFO << "图片目录已创建: " << cfg_.saveDir;
     }
 
     // 5. 扫描已有图片编号
     ScanImageIndex();
-    LOG_INFO << "下一张编号: " << nextIndex_;
+    LOG_INFO << "下一张图片编号: " << nextIndex_;
 
-    // 6. 初始化计时器
-    lastSaveTime_ = std::chrono::steady_clock::now();
-
+    // 6. 图片采集状态
     if (cfg_.captureEnable) {
-        LOG_INFO << "自动采集已启用, 间隔 " << cfg_.captureIntervalMs << "ms";
+        LOG_INFO << "[图片] 自动采集已启用, 间隔 " << cfg_.captureIntervalMs << "ms";
+    } else {
+        LOG_INFO << "[图片] 自动采集已禁用 (按 SPACE 手动保存)";
     }
 
+    // 7. 初始化视频录制
+    if (cfg_.videoEnable) {
+        if (InitVideoWriter(camCfg.width, camCfg.height, camCfg.fps)) {
+            LOG_INFO << "[视频] 录制已启用 → " << videoFilePath_;
+        } else {
+            LOG_ERROR << "[视频] 录制初始化失败, 将仅采集图片";
+            cfg_.videoEnable = false;
+        }
+    } else {
+        LOG_INFO << "[视频] 录制已禁用";
+    }
+
+    // 8. 初始化计时器
+    lastSaveTime_ = std::chrono::steady_clock::now();
+
     return true;
+}
+
+// ── 初始化视频录制器 ──────────────────────────────────────────────
+
+bool DatasetCapture::InitVideoWriter(int width, int height, int fps) {
+    // 1. 创建目录
+    std::error_code ec;
+    if (!fs::exists(cfg_.videoSavePath)) {
+        fs::create_directories(cfg_.videoSavePath, ec);
+        if (ec) {
+            LOG_ERROR << "无法创建视频目录: " << cfg_.videoSavePath
+                      << " (" << ec.message() << ")";
+            return false;
+        }
+        LOG_INFO << "视频目录已创建: " << cfg_.videoSavePath;
+    }
+
+    // 2. 生成文件名
+    videoFilePath_ = cfg_.videoSavePath + "/" + GenerateVideoFileName();
+
+    // 3. 解析 FourCC
+    int fourcc = 0;
+    if (cfg_.videoCodec.length() == 4) {
+        fourcc = cv::VideoWriter::fourcc(
+            cfg_.videoCodec[0], cfg_.videoCodec[1],
+            cfg_.videoCodec[2], cfg_.videoCodec[3]);
+    } else {
+        LOG_ERROR << "视频编码格式无效 (需4字符): " << cfg_.videoCodec;
+        return false;
+    }
+
+    // 4. 打开 VideoWriter
+    bool ok = videoWriter_.open(videoFilePath_, fourcc, fps,
+                                 cv::Size(width, height), true);
+    if (!ok) {
+        LOG_ERROR << "无法打开 VideoWriter: " << videoFilePath_;
+        return false;
+    }
+
+    LOG_INFO << "[视频] "
+             << width << "x" << height << " @ " << fps << "fps"
+             << " " << cfg_.videoCodec;
+
+    return true;
+}
+
+// ── 安全释放 VideoWriter ─────────────────────────────────────────
+
+void DatasetCapture::ReleaseVideoWriter() {
+    if (videoWriter_.isOpened()) {
+        videoWriter_.release();
+        if (!videoFilePath_.empty()) {
+            LOG_INFO << "[视频] 已保存: " << videoFilePath_;
+        }
+    }
 }
 
 // ── 主循环 ──────────────────────────────────────────────────────
@@ -82,14 +158,15 @@ void DatasetCapture::Run() {
     LOG_INFO << "运行中... ESC=退出 SPACE=保存 S=暂停/恢复 R=重新扫描";
 
     while (running_) {
-        // ── 读取帧 ──────────────────────────────────────────
+        // ── 读取帧 (仅一次, 图片和视频共用) ──────────────────
         if (!camera_.read(frame) || frame.empty()) {
             LOG_ERROR << "摄像头读取失败, 退出。";
             break;
         }
 
-        // ── 自动保存 ─────────────────────────────────────────
         auto now = std::chrono::steady_clock::now();
+
+        // ── 图片自动保存 ─────────────────────────────────────
         if (cfg_.captureEnable && !paused_) {
             auto sinceSave = std::chrono::duration<double, std::milli>(
                 now - lastSaveTime_).count();
@@ -97,6 +174,11 @@ void DatasetCapture::Run() {
                 SaveFrame(frame);
                 lastSaveTime_ = now;
             }
+        }
+
+        // ── 视频录制 (与图片并行, 互不影响) ──────────────────
+        if (cfg_.videoEnable && videoWriter_.isOpened() && !paused_) {
+            videoWriter_.write(frame);
         }
 
         // ── 绘制叠加信息 ────────────────────────────────────
@@ -121,22 +203,24 @@ void DatasetCapture::Run() {
             case 'S':
                 paused_ = !paused_;
                 if (paused_) {
-                    LOG_WARN << "自动采集已暂停。";
+                    LOG_WARN << "采集已暂停。";
                 } else {
-                    LOG_INFO << "自动采集已恢复。";
+                    LOG_INFO << "采集已恢复。";
                     lastSaveTime_ = std::chrono::steady_clock::now();
                 }
                 break;
             case 'r':
             case 'R':
                 ScanImageIndex();
-                LOG_INFO << "已重新扫描, 下一张编号: " << nextIndex_;
+                LOG_INFO << "已重新扫描, 下一张图片编号: " << nextIndex_;
                 break;
         }
     }
 
+    // ── 清理 ──────────────────────────────────────────────────
     LOG_INFO << "采集结束。共保存 " << savedCount_ << " 张图片。";
 
+    ReleaseVideoWriter();
     camera_.release();
     cv::destroyAllWindows();
 }
@@ -159,9 +243,9 @@ void DatasetCapture::SaveFrame(const cv::Mat& frame) {
     if (ok) {
         ++savedCount_;
         ++nextIndex_;
-        LOG_INFO << "已保存: " << fullPath;
+        LOG_INFO << "[图片] 已保存: " << filename;
     } else {
-        LOG_ERROR << "保存失败: " << fullPath;
+        LOG_ERROR << "[图片] 保存失败: " << fullPath;
     }
 }
 
@@ -173,6 +257,7 @@ void DatasetCapture::DrawOverlay(cv::Mat& frame) {
     const int lineH = 22;
     const cv::Scalar green(0, 255, 0);
     const cv::Scalar yellow(0, 255, 255);
+    const cv::Scalar red(0, 0, 255);
     const double fontScale = 0.6;
     const int thickness = 2;
 
@@ -190,7 +275,7 @@ void DatasetCapture::DrawOverlay(cv::Mat& frame) {
 
     if (cfg_.showSavedCount) {
         std::ostringstream ss;
-        ss << "Saved: " << savedCount_;
+        ss << "Images: " << savedCount_;
         putLine(ss.str(), green);
     }
 
@@ -200,11 +285,19 @@ void DatasetCapture::DrawOverlay(cv::Mat& frame) {
         putLine(ss.str(), yellow);
     }
 
+    // 视频录制状态指示
+    if (cfg_.videoEnable) {
+        bool recording = videoWriter_.isOpened() && !paused_;
+        std::string recStatus = recording ? "REC" : "STBY";
+        const cv::Scalar& recColor = recording ? red : yellow;
+        putLine("Video: " + recStatus, recColor);
+    }
+
     {
         std::string status;
         if (!running_)       status = "STOPPED";
         else if (paused_)    status = "PAUSED";
-        else if (cfg_.captureEnable) status = "RUNNING";
+        else if (cfg_.captureEnable || cfg_.videoEnable) status = "RUNNING";
         else                 status = "MANUAL";
         putLine("Status: " + status, paused_ ? yellow : green);
     }
@@ -215,10 +308,10 @@ void DatasetCapture::DrawOverlay(cv::Mat& frame) {
 void DatasetCapture::ScanImageIndex() {
     nextIndex_ = 1;
 
-    if (!std::filesystem::exists(cfg_.saveDir)) return;
+    if (!fs::exists(cfg_.saveDir)) return;
 
     int maxIdx = 0;
-    for (const auto& entry : std::filesystem::directory_iterator(cfg_.saveDir)) {
+    for (const auto& entry : fs::directory_iterator(cfg_.saveDir)) {
         if (!entry.is_regular_file()) continue;
 
         std::string name = entry.path().filename().string();
@@ -240,12 +333,31 @@ void DatasetCapture::ScanImageIndex() {
     nextIndex_ = maxIdx + 1;
 }
 
-// ── 生成文件名 ──────────────────────────────────────────────────
+// ── 生成图片文件名 ──────────────────────────────────────────────
 
 std::string DatasetCapture::GenerateFileName() const {
     std::ostringstream ss;
     ss << cfg_.prefix << "_"
        << std::setw(6) << std::setfill('0') << nextIndex_
        << "." << cfg_.format;
+    return ss.str();
+}
+
+// ── 生成视频文件名 ──────────────────────────────────────────────
+
+std::string DatasetCapture::GenerateVideoFileName() const {
+    auto now = std::chrono::system_clock::now();
+    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    std::tm* tm = std::localtime(&tt);
+
+    std::ostringstream ss;
+    ss << cfg_.videoFilenamePrefix << "_"
+       << std::setw(4) << std::setfill('0') << (tm->tm_year + 1900)
+       << std::setw(2) << std::setfill('0') << (tm->tm_mon + 1)
+       << std::setw(2) << std::setfill('0') << tm->tm_mday << "_"
+       << std::setw(2) << std::setfill('0') << tm->tm_hour
+       << std::setw(2) << std::setfill('0') << tm->tm_min
+       << std::setw(2) << std::setfill('0') << tm->tm_sec
+       << "." << cfg_.videoExtension;
     return ss.str();
 }

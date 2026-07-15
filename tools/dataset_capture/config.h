@@ -1,5 +1,5 @@
 /// @file config.h
-/// @brief Dataset Capture 轻量配置模块 — 采集与显示参数。
+/// @brief Dataset Capture 轻量配置模块 — 采集、视频录制与显示参数。
 ///
 /// 摄像头参数统一使用 CameraConfig (camera/camera.h)，不再在此定义。
 
@@ -11,13 +11,20 @@
 namespace YAML { class Node; }
 
 struct CaptureConfig {
-    // ── 采集 ──────────────────────────────────────────────────
+    // ── 图片采集 ──────────────────────────────────────────────
     bool   captureEnable    = true;
     int    captureIntervalMs = 100;       ///< 自动保存间隔 (毫秒)
-    std::string saveDir     = "./dataset";
+    std::string saveDir     = "./dataset/images";
     std::string prefix      = "img";
     std::string format      = "jpg";
     int    jpegQuality      = 95;
+
+    // ── 视频录制 ──────────────────────────────────────────────
+    bool   videoEnable        = false;
+    std::string videoSavePath = "dataset/videos";
+    std::string videoFilenamePrefix = "capture";
+    std::string videoCodec    = "MJPG";
+    std::string videoExtension = "avi";
 
     // ── 显示 ──────────────────────────────────────────────────
     bool   displayEnable      = true;

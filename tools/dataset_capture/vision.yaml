@@ -19,12 +19,22 @@ camera:
   white_balance: 4600     # 白平衡色温/Kelvin (仅 auto_white_balance=false 时生效, 范围 2800-6500)
 
 capture:
-  enable: false            # 是否启用自动采集
-  interval_ms: 100        # 自动保存间隔 (毫秒) — 10FPS
-  save_dir: "./dataset"   # 图片保存目录
-  prefix: "img"           # 文件名前缀
-  format: "jpg"           # 图片格式
-  jpeg_quality: 95        # JPEG 质量 (1-100)
+  # ── 图片采集 ──────────────────────────────────────────────
+  image:
+    enable: false           # 是否启用自动采集
+    interval_ms: 100       # 自动保存间隔 (毫秒) — 10FPS
+    save_dir: "./dataset/images"   # 图片保存目录
+    prefix: "img"          # 文件名前缀
+    format: "jpg"          # 图片格式
+    jpeg_quality: 95       # JPEG 质量 (1-100)
+
+  # ── 视频录制 (与图片采集同步, 共用同一帧) ────────────────
+  video:
+    enable: true           # 是否启用视频录制
+    save_path: "dataset/videos"    # 视频保存目录
+    filename_prefix: "capture"     # 文件名前缀
+    codec: "MJPG"          # 视频编码 (FourCC)
+    extension: "avi"       # 文件扩展名
 
 display:
   enable: true            # 是否显示画面

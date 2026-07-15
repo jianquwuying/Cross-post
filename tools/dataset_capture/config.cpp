@@ -1,5 +1,5 @@
 /// @file config.cpp
-/// @brief YAML 配置加载实现 — 仅采集和显示参数。
+/// @brief YAML 配置加载实现 — 图片采集、视频录制与显示参数。
 
 #include "config.h"
 
@@ -24,21 +24,40 @@ CaptureConfig CaptureConfig::load(const std::string& yamlPath) {
 CaptureConfig CaptureConfig::load(const YAML::Node& root) {
     CaptureConfig cfg;
 
-    // ── 采集 ────────────────────────────────────────────
     if (root["capture"].IsDefined()) {
         auto cp = root["capture"];
-        if (cp["enable"].IsDefined())
-            cfg.captureEnable = cp["enable"].as<bool>();
-        if (cp["interval_ms"].IsDefined())
-            cfg.captureIntervalMs = cp["interval_ms"].as<int>();
-        if (cp["save_dir"].IsDefined())
-            cfg.saveDir      = cp["save_dir"].as<std::string>();
-        if (cp["prefix"].IsDefined())
-            cfg.prefix       = cp["prefix"].as<std::string>();
-        if (cp["format"].IsDefined())
-            cfg.format       = cp["format"].as<std::string>();
-        if (cp["jpeg_quality"].IsDefined())
-            cfg.jpegQuality  = cp["jpeg_quality"].as<int>();
+
+        // ── 图片采集 ────────────────────────────────────────
+        if (cp["image"].IsDefined()) {
+            auto im = cp["image"];
+            if (im["enable"].IsDefined())
+                cfg.captureEnable = im["enable"].as<bool>();
+            if (im["interval_ms"].IsDefined())
+                cfg.captureIntervalMs = im["interval_ms"].as<int>();
+            if (im["save_dir"].IsDefined())
+                cfg.saveDir = im["save_dir"].as<std::string>();
+            if (im["prefix"].IsDefined())
+                cfg.prefix = im["prefix"].as<std::string>();
+            if (im["format"].IsDefined())
+                cfg.format = im["format"].as<std::string>();
+            if (im["jpeg_quality"].IsDefined())
+                cfg.jpegQuality = im["jpeg_quality"].as<int>();
+        }
+
+        // ── 视频录制 ────────────────────────────────────────
+        if (cp["video"].IsDefined()) {
+            auto vd = cp["video"];
+            if (vd["enable"].IsDefined())
+                cfg.videoEnable = vd["enable"].as<bool>();
+            if (vd["save_path"].IsDefined())
+                cfg.videoSavePath = vd["save_path"].as<std::string>();
+            if (vd["filename_prefix"].IsDefined())
+                cfg.videoFilenamePrefix = vd["filename_prefix"].as<std::string>();
+            if (vd["codec"].IsDefined())
+                cfg.videoCodec = vd["codec"].as<std::string>();
+            if (vd["extension"].IsDefined())
+                cfg.videoExtension = vd["extension"].as<std::string>();
+        }
     }
 
     // ── 显示 ────────────────────────────────────────────
