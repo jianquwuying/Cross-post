@@ -242,74 +242,69 @@ void Camera::verifyAndLog(const CameraConfig& cfg) {
     int    actualWBTemp  = v4l2GetControl(cfg.device, V4L2_CID_WHITE_BALANCE_TEMPERATURE);
 
     std::string actualFourCCStr = fourccToString(actualFourCC);
-    bool actualAutoExpBool  = (actualAutoExp < 0.9);   // 0.75 = auto, 1.0 = manual
+    bool actualAutoExpBool  = (actualAutoExp < 0.9);
     bool actualAutoWBBool   = (actualAutoWB == 1);
 
-    // ── 辅助 lambda: 比较并标记 ─────────────────────────────────
-    auto status = [](auto req, auto act) -> std::string {
-        if (req == act) return "\033[32mOK\033[0m";    // 绿色
-        else            return "\033[33mWARN\033[0m";   // 黄色
+    // ── 比较函数 (返回纯文本 "OK" / "WARN", ANSI 颜色在 row 中统一处理) ──
+    auto match = [](auto req, auto act) -> std::string {
+        return (req == act) ? "OK" : "WARN";
     };
 
-    auto statusBool = [&](bool req, bool act) -> std::string {
-        if (req == act) return "\033[32mOK\033[0m";
-        else            return "\033[33mWARN\033[0m";
-    };
-
-    auto statusInt = [&](int req, int act) -> std::string {
-        return status(req, act);
-    };
-
-    auto statusStr = [&](const std::string& req, const std::string& act) -> std::string {
-        return status(req, act);
-    };
-
-    // ── 打印表格 ────────────────────────────────────────────────
+    // ── 表格头 ──────────────────────────────────────────────────
+    // 列宽: 10, 16, 16, 8  (setw + 前后空格)
     std::cout << "\n\033[1m"
-              << "┌──────────────────────────────────────────────────────┐\n"
-              << "│               Camera Parameters                      │\n"
-              << "├──────────┬──────────────┬──────────────┬─────────────┤\n"
-              << "│ Param    │ Requested    │ Actual       │ Status      │\n"
-              << "├──────────┼──────────────┼──────────────┼─────────────┤\n"
+              << "┌──────────┬────────────────┬────────────────┬────────┐\n"
+              << "│ Param    │ Requested      │ Actual         │ Status │\n"
+              << "├──────────┼────────────────┼────────────────┼────────┤\n"
               << "\033[0m";
 
-    auto row = [](const std::string& param, const std::string& req,
-                   const std::string& act, const std::string& st) {
-        std::cout << "│ " << std::left  << std::setw(8)  << param
-                  << " │ " << std::left  << std::setw(12) << req
-                  << " │ " << std::left  << std::setw(12) << act
-                  << " │ " << std::setw(11) << st << " │\n";
+    // ── 行输出: status 文本不含 ANSI, 由本 lambda 包裹颜色 ──────
+    auto row = [](const std::string& param,
+                  const std::string& req, const std::string& act,
+                  const std::string& st) {
+        const char* color = (st == "WARN") ? "\033[33m" : "\033[32m";
+        std::cout << "│ " << std::left << std::setw(8)  << param
+                  << " │ "           << std::setw(14) << req
+                  << " │ "           << std::setw(14) << act
+                  << " │ " << color  << std::setw(6)  << st << "\033[0m │\n";
     };
 
     row("device",   std::to_string(cfg.device),
-                    std::to_string(cfg.device), statusInt(cfg.device, cfg.device));
+                    std::to_string(cfg.device),
+                    match(cfg.device, cfg.device));
     row("backend",  cfg.backend,
-                    cfg.backend,           statusStr(cfg.backend, cfg.backend));
+                    cfg.backend,
+                    match(cfg.backend, cfg.backend));
     row("fourcc",   cfg.fourcc,
-                    actualFourCCStr,        statusStr(cfg.fourcc, actualFourCCStr));
+                    actualFourCCStr,
+                    match(cfg.fourcc, actualFourCCStr));
     row("width",    std::to_string(cfg.width),
-                    std::to_string(actualWidth),  statusInt(cfg.width, actualWidth));
+                    std::to_string(actualWidth),
+                    match(cfg.width, actualWidth));
     row("height",   std::to_string(cfg.height),
-                    std::to_string(actualHeight), statusInt(cfg.height, actualHeight));
+                    std::to_string(actualHeight),
+                    match(cfg.height, actualHeight));
     row("fps",      std::to_string(cfg.fps),
-                    std::to_string(actualFPS),    statusInt(cfg.fps, actualFPS));
+                    std::to_string(actualFPS),
+                    match(cfg.fps, actualFPS));
     row("buf_size", std::to_string(cfg.buffer_size),
-                    std::to_string(cfg.buffer_size), statusInt(cfg.buffer_size, cfg.buffer_size));
+                    std::to_string(cfg.buffer_size),
+                    match(cfg.buffer_size, cfg.buffer_size));
     row("auto_exp", (cfg.auto_exposure ? "true" : "false"),
                     (actualAutoExpBool ? "true" : "false"),
-                    statusBool(cfg.auto_exposure, actualAutoExpBool));
+                    match(cfg.auto_exposure, actualAutoExpBool));
     row("exposure", std::to_string(cfg.exposure),
                     std::to_string(static_cast<int>(actualExpVal)),
-                    statusInt(cfg.exposure, static_cast<int>(actualExpVal)));
+                    match(cfg.exposure, static_cast<int>(actualExpVal)));
     row("auto_wb",  (cfg.auto_white_balance ? "true" : "false"),
                     (actualAutoWBBool ? "true" : "false"),
-                    statusBool(cfg.auto_white_balance, actualAutoWBBool));
+                    match(cfg.auto_white_balance, actualAutoWBBool));
     row("wb_temp",  std::to_string(cfg.white_balance),
                     std::to_string(actualWBTemp),
-                    statusInt(cfg.white_balance, actualWBTemp));
+                    match(cfg.white_balance, actualWBTemp));
 
     std::cout << "\033[1m"
-              << "└──────────┴──────────────┴──────────────┴─────────────┘\n"
+              << "└──────────┴────────────────┴────────────────┴────────┘\n"
               << "\033[0m" << std::endl;
 }
 

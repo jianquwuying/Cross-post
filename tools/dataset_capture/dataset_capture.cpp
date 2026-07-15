@@ -8,14 +8,11 @@
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgcodecs.hpp>
 
-#include <yaml-cpp/yaml.h>
-
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <thread>
-#include <cstdlib>
 
 // ═══════════════════════════════════════════════════════════════════
 
@@ -27,36 +24,27 @@ DatasetCapture::~DatasetCapture() {
 
 // ── 初始化 ────────────────────────────────────────────────────────
 
-bool DatasetCapture::Init(const std::string& yamlPath) {
-    // 1. 加载 YAML
-    YAML::Node root;
-    try {
-        root = YAML::LoadFile(yamlPath);
-    } catch (const YAML::Exception& e) {
-        LOG_ERROR << "YAML 解析失败: " << e.what();
-        return false;
-    }
-
-    // 2. 解析摄像头配置 (严格, 缺失字段直接 exit(1))
+bool DatasetCapture::Init(const YAML::Node& root) {
+    // 1. 解析摄像头配置 (严格, 缺失字段直接 exit(1))
     if (!root["camera"].IsDefined()) {
         LOG_ERROR << "配置缺少 'camera' 段";
         return false;
     }
     CameraConfig camCfg = CameraConfig::fromYaml(root["camera"]);
 
-    // 3. 加载采集/显示配置
-    cfg_ = CaptureConfig::load(yamlPath);
+    // 2. 加载采集/显示配置 (共用同一个 YAML::Node, 不重复读文件)
+    cfg_ = CaptureConfig::load(root);
 
     LOG_INFO << "保存目录: " << cfg_.saveDir
              << "  间隔: " << cfg_.captureIntervalMs << "ms";
 
-    // 4. 打开摄像头 (Camera 类会自动打印参数表格)
+    // 3. 打开摄像头 (Camera 类会自动打印参数表格)
     if (!camera_.open(camCfg)) {
         LOG_ERROR << "无法打开摄像头 /dev/video" << camCfg.device;
         return false;
     }
 
-    // 5. 创建保存目录
+    // 4. 创建保存目录
     std::error_code ec;
     if (!std::filesystem::exists(cfg_.saveDir)) {
         std::filesystem::create_directories(cfg_.saveDir, ec);
@@ -68,11 +56,11 @@ bool DatasetCapture::Init(const std::string& yamlPath) {
         LOG_INFO << "目录已创建: " << cfg_.saveDir;
     }
 
-    // 6. 扫描已有图片编号
+    // 5. 扫描已有图片编号
     ScanImageIndex();
     LOG_INFO << "下一张编号: " << nextIndex_;
 
-    // 7. 初始化计时器
+    // 6. 初始化计时器
     lastSaveTime_ = std::chrono::steady_clock::now();
 
     if (cfg_.captureEnable) {

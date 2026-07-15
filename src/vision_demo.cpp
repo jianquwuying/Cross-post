@@ -30,6 +30,7 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -196,7 +197,7 @@ int main(int argc, char* argv[]) {
     std::signal(SIGTERM, signalHandler);
 
     // ── 解析 --config ──────────────────────────────────────────
-    std::string configPath = "config/vision.yaml";
+    std::string configPath;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--config" && i + 1 < argc) {
@@ -204,11 +205,48 @@ int main(int argc, char* argv[]) {
         }
         if (arg == "--help" || arg == "-h") {
             std::cout << "用法: " << argv[0] << " [--config PATH]\n"
-                      << "  --config PATH  配置文件路径 (默认: config/vision.yaml)\n"
+                      << "  --config PATH  配置文件路径 (默认: 自动查找)\n"
                       << "  --help, -h     显示本帮助\n"
-                      << "\n输入源由 YAML 中的 input.type 决定: camera | video\n";
+                      << "\n输入源由 YAML 中的 input.type 决定: camera | video\n"
+                      << "自动搜索 (基于 /proc/self/exe): <exe>/../config/vision.yaml\n";
             return 0;
         }
+    }
+
+    // ── 自动搜索配置文件 (基于二进制位置) ──────────────────────
+    if (configPath.empty()) {
+        std::vector<std::string> candidates;
+
+        // 通过 /proc/self/exe 获取二进制所在目录
+        std::error_code ec;
+        auto exePath = std::filesystem::read_symlink("/proc/self/exe", ec);
+        if (!ec) {
+            std::string exeDir = std::filesystem::path(exePath).parent_path().string();
+            candidates.push_back(exeDir + "/../config/vision.yaml");  // build/ → config/
+        }
+
+        // CWD 回退
+        candidates.push_back("../config/vision.yaml");
+        candidates.push_back("config/vision.yaml");
+
+        for (const auto& p : candidates) {
+            if (std::filesystem::exists(p)) {
+                configPath = p;
+                break;
+            }
+        }
+
+        if (configPath.empty()) {
+            std::cerr << "\033[31m[ERROR]\033[0m "
+                      << "找不到配置文件。搜索路径:\n";
+            for (const auto& p : candidates) {
+                std::cerr << "  " << p << "\n";
+            }
+            std::cerr << "\n请通过 --config 指定配置文件路径。\n";
+            return 1;
+        }
+        std::cout << "\033[32m[INFO]\033[0m  "
+                  << "自动发现配置: " << configPath << "\n";
     }
 
     // ── 加载 YAML ──────────────────────────────────────────────

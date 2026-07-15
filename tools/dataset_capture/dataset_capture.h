@@ -18,6 +18,8 @@
 #include "config.h"
 #include "camera/camera.h"
 
+#include <yaml-cpp/yaml.h>
+
 #include <opencv2/core.hpp>
 
 #include <chrono>
@@ -32,8 +34,9 @@ public:
     DatasetCapture(const DatasetCapture&) = delete;
     DatasetCapture& operator=(const DatasetCapture&) = delete;
 
-    /// 初始化: 加载配置 + 打开摄像头 + 创建目录 + 扫描编号
-    bool Init(const std::string& yamlPath);
+    /// 初始化: 解析 YAML + 打开摄像头 + 创建目录 + 扫描编号
+    /// @param root  已解析的 YAML::Node (由调用方加载, 避免重复解析文件)
+    bool Init(const YAML::Node& root);
 
     /// 主循环: 采集 + 显示 + 快捷键处理
     void Run();

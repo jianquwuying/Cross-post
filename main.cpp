@@ -28,6 +28,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <filesystem>
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
@@ -310,14 +311,14 @@ int main(int argc, char* argv[]) {
     std::signal(SIGTERM, signalHandler);
 
     // ── 解析 --config 和 --help（需要在 YAML 加载前处理） ─────
-    std::string configPath = "config/vision.yaml";
+    std::string configPath;
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--config" && i + 1 < argc) {
             configPath = argv[++i];
         }
         if (std::string(argv[i]) == "--help" || std::string(argv[i]) == "-h") {
             std::cout << "用法: " << argv[0] << " [选项]\n"
-                      << "  --config  PATH   YAML配置文件路径 (默认: config/vision.yaml)\n"
+                      << "  --config  PATH   YAML配置文件路径 (默认: 自动查找)\n"
                       << "  --model   TYPE   模型类型: fp16 | int8 (默认: fp16)\n"
                       << "  --serial  DEV    串口设备 (默认: /dev/ttyAMA0)\n"
                       << "  --baud    RATE   波特率 (默认: 115200)\n"
@@ -327,9 +328,47 @@ int main(int argc, char* argv[]) {
                       << "  --conf    F      置信度阈值 (默认: 0.25)\n"
                       << "  --log-level LVL  日志级别: debug|info|warn|error (默认: info)\n"
                       << "  --help, -h       显示本帮助信息\n"
-                      << "\n所有参数也可通过 YAML 配置文件设置。\n";
+                      << "\n自动搜索 (基于 /proc/self/exe): <exe>/../config/vision.yaml\n"
+                      << "所有参数也可通过 YAML 配置文件设置。\n";
             return 0;
         }
+    }
+
+    // ── 自动搜索配置文件 (基于二进制位置) ──────────────────────
+    if (configPath.empty()) {
+        std::vector<std::string> candidates;
+
+        // 通过 /proc/self/exe 获取二进制所在目录
+        std::error_code ec;
+        auto exePath = std::filesystem::read_symlink("/proc/self/exe", ec);
+        if (!ec) {
+            std::string exeDir = std::filesystem::path(exePath).parent_path().string();
+            candidates.push_back(exeDir + "/../config/vision.yaml");  // build/ → config/
+        }
+
+        // CWD 回退
+        candidates.push_back("../config/vision.yaml");
+        candidates.push_back("config/vision.yaml");
+
+        for (const auto& p : candidates) {
+            if (std::filesystem::exists(p)) {
+                configPath = p;
+                break;
+            }
+        }
+
+        if (configPath.empty()) {
+            std::cerr << "\033[31m[ERROR]\033[0m "
+                      << "找不到配置文件。搜索路径:\n";
+            for (const auto& p : candidates) {
+                std::cerr << "  " << p << "\n";
+            }
+            std::cerr << "\n请通过 --config 指定配置文件路径。\n";
+            return 1;
+        }
+
+        std::cout << "\033[32m[INFO]\033[0m  "
+                  << "自动发现配置: " << configPath << "\n";
     }
 
     // ── 加载 YAML 配置 ────────────────────────────────────────

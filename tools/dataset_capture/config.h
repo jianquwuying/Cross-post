@@ -7,6 +7,9 @@
 
 #include <string>
 
+// 前向声明, 避免在此引入完整 yaml-cpp 头文件
+namespace YAML { class Node; }
+
 struct CaptureConfig {
     // ── 采集 ──────────────────────────────────────────────────
     bool   captureEnable    = true;
@@ -22,7 +25,9 @@ struct CaptureConfig {
     bool   showFps            = true;
     bool   showSavedCount     = true;
 
-    /// 从 YAML 文件加载采集/显示配置
-    /// @note 摄像头参数需单独通过 CameraConfig::fromYaml() 加载
+    /// 从 YAML 文件路径加载采集/显示配置
     static CaptureConfig load(const std::string& yamlPath);
+
+    /// 从已解析的 YAML::Node 加载 (避免重复解析文件)
+    static CaptureConfig load(const YAML::Node& root);
 };
