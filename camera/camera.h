@@ -3,32 +3,42 @@
 ///
 /// 针对 Raspberry Pi 5 设计，支持 USB 或 CSI 摄像头。
 /// 支持 MJPEG 和 YUYV 像素格式，可配置分辨率和帧率。
+/// 所有摄像头参数完全由 YAML 配置文件控制，无硬编码默认值。
 
 #pragma once
 
 #include <opencv2/core.hpp>
 #include <opencv2/videoio.hpp>
+
+#include <yaml-cpp/yaml.h>
+
 #include <string>
 #include <chrono>
 #include <atomic>
 
+// ── 摄像头统一配置（无默认值，全部来自 YAML）───────────────────────
+
+struct CameraConfig {
+    int         device;                ///< /dev/videoX 设备索引
+    std::string backend;               ///< "V4L2" | "ANY" | "DSHOW"
+    int         width;                 ///< 采集宽度
+    int         height;                ///< 采集高度
+    int         fps;                   ///< 目标帧率
+    std::string fourcc;                ///< 像素格式: "MJPG" | "YUYV"
+    int         buffer_size;           ///< V4L2 缓冲区数量 (1 = 最低延迟)
+    bool        auto_exposure;         ///< true = 自动曝光, false = 手动
+    int         exposure;              ///< 手动曝光值 (仅 auto_exposure=false 时生效)
+    bool        auto_white_balance;    ///< true = 自动白平衡, false = 手动
+    int         white_balance;         ///< 白平衡色温 / Kelvin (仅 auto_wb=false 时生效)
+
+    /// 从 YAML 节点严格解析（缺失字段直接 exit(1)）
+    static CameraConfig fromYaml(const YAML::Node& node);
+};
+
+// ── 摄像头采集类 ────────────────────────────────────────────────────
+
 class Camera {
 public:
-    /// 摄像头配置
-    struct Config {
-        int deviceId     = 0;              ///< /dev/videoX 设备索引
-        int width        = 640;            ///< 采集宽度
-        int height       = 480;            ///< 采集高度
-        int fps          = 30;             ///< 目标帧率
-        int apiPreference = cv::CAP_V4L2;  ///< V4L2 后端
-        /// FourCC 编码: "MJPG" 为 MJPEG（CPU占用低）, "YUYV" 为原始格式
-        std::string fourcc = "MJPG";
-        /// 摄像头曝光 (V4L2 手动控制, -1 = 自动)
-        int exposure     = -1;
-        /// V4L2 缓冲区大小 (越大越流畅但延迟越高)
-        int bufferSize   = 1;
-    };
-
     Camera() = default;
     ~Camera();
 
@@ -38,10 +48,8 @@ public:
     Camera(Camera&&) noexcept;
     Camera& operator=(Camera&&) noexcept;
 
-    /// 使用默认配置打开摄像头
-    bool open() { return open(Config{}); }
-    /// 使用指定配置打开摄像头
-    bool open(const Config& config);
+    /// 使用指定配置打开摄像头（必须提供完整配置，无默认值）
+    bool open(const CameraConfig& config);
 
     /// 检查摄像头是否成功打开
     bool isOpened() const { return cap_.isOpened(); }
@@ -53,7 +61,7 @@ public:
     /// 释放摄像头资源
     void release();
 
-    /// 获取当前实测 FPS
+    /// 获取当前实测 FPS（EMA 平滑）
     double getActualFPS() const;
 
     /// 获取摄像头属性
@@ -62,14 +70,20 @@ public:
     bool   setProperty(int propId, double value);
 
     /// 获取当前配置
-    const Config& getConfig() const { return config_; }
+    const CameraConfig& getConfig() const { return config_; }
 
 private:
-    /// 应用 V4L2 特定设置（曝光、缓冲区、FourCC）
-    bool applyV4L2Settings();
+    /// 应用曝光控制 (OpenCV CAP_PROP_AUTO_EXPOSURE + CAP_PROP_EXPOSURE)
+    void applyExposure(const CameraConfig& cfg);
+
+    /// 应用白平衡控制 (直接 V4L2 ioctl，OpenCV 不支持 CAP_PROP_AUTO_WB)
+    void applyWhiteBalance(const CameraConfig& cfg);
+
+    /// 读取实际参数并打印 ANSI 验证表格，不一致时输出 WARN
+    void verifyAndLog(const CameraConfig& cfg);
 
     cv::VideoCapture cap_;
-    Config config_;
+    CameraConfig config_;
     std::chrono::steady_clock::time_point lastFrameTime_;
     mutable std::atomic<double> actualFPS_{0.0};
 };

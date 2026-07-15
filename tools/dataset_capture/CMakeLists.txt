@@ -16,22 +16,36 @@ find_package(OpenCV 4.8 REQUIRED
 
 find_package(yaml-cpp REQUIRED)
 
+# ── 共享模块路径 (主工程根目录) ──────────────────────────────────
+set(PROJECT_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+set(CAMERA_DIR ${PROJECT_ROOT}/camera)
+set(LOGGER_DIR ${PROJECT_ROOT}/logger)
+
 # ── 源文件 ───────────────────────────────────────────────────────
 set(SOURCES
     main.cpp
     config.cpp
     dataset_capture.cpp
+    ${CAMERA_DIR}/camera.cpp
+    ${LOGGER_DIR}/logger.cpp
 )
 
 set(HEADERS
     config.h
     dataset_capture.h
+    ${CAMERA_DIR}/camera.h
+    ${LOGGER_DIR}/logger.h
 )
 
 # ── 可执行文件 ────────────────────────────────────────────────────
 add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS})
 
-target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(${PROJECT_NAME} PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${PROJECT_ROOT}            # 使 #include "camera/camera.h" 生效
+    ${OpenCV_INCLUDE_DIRS}
+    ${YAMLCPP_INCLUDE_DIRS}
+)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
     ${OpenCV_LIBS}

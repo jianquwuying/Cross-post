@@ -1,3 +1,9 @@
+/// @file config.cpp
+/// @brief 统一 YAML 配置加载实现。
+///
+/// 摄像头部分严格解析 — 缺失字段直接 exit(1)。
+/// 其他模块保持 IsDefined() 默认值回退（兼容已有逻辑）。
+
 #include "config/config.h"
 
 #include <yaml-cpp/yaml.h>
@@ -5,9 +11,10 @@
 #include <iostream>
 #include <fstream>
 #include <cstring>
+#include <cstdlib>
 
 // ── YAML 辅助宏 ───────────────────────────────────────────────────
-// 安全读取 YAML 节点，节点不存在时静默跳过
+// 安全读取 YAML 节点，节点不存在时静默跳过 (仅用于非摄像头模块)
 
 #define YAML_READ_INT(node, key, field)   \
     if (node[#key].IsDefined()) field = node[#key].as<int>()
@@ -26,16 +33,14 @@ AppConfig AppConfig::load(const std::string& yamlPath) {
     try {
         YAML::Node root = YAML::LoadFile(yamlPath);
 
-        // ── 摄像头 ──────────────────────────────────────────
-        if (root["camera"]) {
-            auto c = root["camera"];
-            YAML_READ_INT(c, device_id, cfg.camera.deviceId);
-            YAML_READ_INT(c, width, cfg.camera.width);
-            YAML_READ_INT(c, height, cfg.camera.height);
-            YAML_READ_INT(c, fps, cfg.camera.fps);
-            YAML_READ_STR(c, fourcc, cfg.camera.fourcc);
-            YAML_READ_INT(c, buffer_size, cfg.camera.bufferSize);
+        // ── 摄像头 (严格解析) ─────────────────────────────────
+        if (!root["camera"].IsDefined()) {
+            std::cerr << "\033[31m[ERROR]\033[0m "
+                      << "Missing required 'camera' section in config: "
+                      << yamlPath << std::endl;
+            std::exit(1);
         }
+        cfg.camera = CameraConfig::fromYaml(root["camera"]);
 
         // ── YOLO ────────────────────────────────────────────
         if (root["yolo"]) {
@@ -146,7 +151,7 @@ void AppConfig::applyCliOverrides(int argc, char* argv[]) {
         }
         // 摄像头
         else if (arg == "--camera" && i + 1 < argc) {
-            camera.deviceId = std::stoi(argv[++i]);
+            camera.device = std::stoi(argv[++i]);
         }
         // 输入尺寸
         else if (arg == "--size" && i + 1 < argc) {
@@ -180,10 +185,16 @@ void AppConfig::print() const {
     std::cout << "║          当前配置                        ║\n";
     std::cout << "╚══════════════════════════════════════════╝\n";
 
-    std::cout << "[摄像头] 设备=" << camera.deviceId
+    std::cout << "[摄像头] 设备=" << camera.device
+              << " 后端=" << camera.backend
               << " " << camera.width << "x" << camera.height
               << " @ " << camera.fps << "fps"
-              << " " << camera.fourcc << "\n";
+              << " " << camera.fourcc
+              << " 缓冲=" << camera.buffer_size
+              << " 自动曝光=" << (camera.auto_exposure ? "是" : "否")
+              << " 曝光=" << camera.exposure
+              << " 自动白平衡=" << (camera.auto_white_balance ? "是" : "否")
+              << " 白平衡=" << camera.white_balance << "K\n";
 
     std::cout << "[YOLO] 模型=" << yolo.modelType
               << " 目录=" << yolo.modelDir

@@ -8,13 +8,22 @@ input:
   type: "camera"          # "camera" (实时摄像头) | "video" (离线视频文件)
 
 # ── 摄像头参数 (input.type=camera 时生效) ───────────────────────
+#   实际硬件: USB Camera (uvcvideo), /dev/video0, S/N: 200901010001
+#   支持格式:
+#     MJPG: 1280x720@60, 800x600@60, 640x480@60, 352x288@60, 320x240@60, 176x144@60
+#     YUYV: 1280x720@10, 800x600@15, 640x480@30, 352x288@30, 320x240@30, 176x144@30
 camera:
-  id: 0                   # /dev/videoX
+  device: 0               # /dev/videoX
+  backend: "V4L2"         # "V4L2" | "ANY"
   width: 640
   height: 480
-  fps: 30
-  fourcc: "MJPG"          # MJPEG (低CPU) 或 YUYV
+  fps: 60                 # MJPG 下可达 60fps (1280x720 也可)
+  fourcc: "MJPG"          # MJPG (低CPU/高帧率) | YUYV (未压缩/低帧率)
   buffer_size: 1          # V4L2缓冲数 (1=最低延迟)
+  auto_exposure: false    # true=自动曝光 | false=手动曝光
+  exposure: 156           # 手动曝光值 (仅 auto_exposure=false 时生效, 范围 1-10000)
+  auto_white_balance: false  # true=自动白平衡 | false=手动白平衡
+  white_balance: 4600     # 白平衡色温/Kelvin (仅 auto_white_balance=false 时生效, 范围 2800-6500)
 
 # ── 视频参数 (input.type=video 时生效) ──────────────────────────
 video:

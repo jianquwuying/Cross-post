@@ -2,14 +2,24 @@
 #  Dataset Capture — 原始数据集采集工具配置
 # ═══════════════════════════════════════════════════════════════════
 
+# 实际硬件: USB Camera (uvcvideo), /dev/video0, S/N: 200901010001
+# ── MJPG 支持分辨率 (全部@60fps): 1280x720, 800x600, 640x480, 352x288, 320x240, 176x144
+# ── YUYV 未压缩 (低帧率):      1280x720@10, 800x600@15, 640x480@30
 camera:
   device: 0               # /dev/videoX
-  width: 1280
-  height: 720
-  fps: 30
+  backend: "V4L2"         # "V4L2" | "ANY"
+  width: 640
+  height: 480             # 640x640 不支持，已修正为 640x480
+  fps: 60                 # MJPG 下可达 60fps
+  fourcc: "MJPG"          # MJPG (低CPU/高帧率) | YUYV (未压缩/低帧率)
+  buffer_size: 1          # V4L2缓冲数 (1=最低延迟)
+  auto_exposure: false    # true=自动曝光 | false=手动曝光
+  exposure: 156           # 手动曝光值 (仅 auto_exposure=false 时生效, 范围 1-10000)
+  auto_white_balance: false  # true=自动白平衡 | false=手动白平衡
+  white_balance: 4600     # 白平衡色温/Kelvin (仅 auto_white_balance=false 时生效, 范围 2800-6500)
 
 capture:
-  enable: true            # 是否启用自动采集
+  enable: false            # 是否启用自动采集
   interval_ms: 100        # 自动保存间隔 (毫秒) — 10FPS
   save_dir: "./dataset"   # 图片保存目录
   prefix: "img"           # 文件名前缀

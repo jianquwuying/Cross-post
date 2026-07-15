@@ -4,9 +4,12 @@
 /// 所有可调参数由 YAML 文件控制，修改参数无需重新编译。
 /// 依赖: yaml-cpp (libyaml-cpp-dev)
 ///
-/// CLI 参数可覆盖 YAML 中的值，优先级: CLI > YAML > 默认值。
+/// CLI 参数可覆盖 YAML 中的值，优先级: CLI > YAML。
+/// 摄像头参数统一使用 CameraConfig (camera/camera.h)，不允许默认值。
 
 #pragma once
+
+#include "camera/camera.h"
 
 #include <string>
 #include <vector>
@@ -14,15 +17,8 @@
 // ── 统一配置结构体 ────────────────────────────────────────────────
 
 struct AppConfig {
-    // ── 摄像头 ────────────────────────────────────────────────
-    struct CameraCfg {
-        int    deviceId    = 0;
-        int    width       = 640;
-        int    height      = 480;
-        int    fps         = 30;
-        std::string fourcc = "MJPG";
-        int    bufferSize  = 1;
-    } camera;
+    // ── 摄像头 (来自 camera/camera.h，无默认值) ───────────────
+    CameraConfig camera;
 
     // ── YOLO 检测 ─────────────────────────────────────────────
     struct YoloCfg {
@@ -86,7 +82,7 @@ struct AppConfig {
 
     /// 从 YAML 文件加载配置
     /// @param yamlPath  YAML 文件路径
-    /// @return 解析后的配置（未指定的字段使用默认值）
+    /// @return 解析后的配置（摄像头字段缺失时直接 exit(1)）
     static AppConfig load(const std::string& yamlPath);
 
     /// CLI 参数覆盖 YAML 配置值

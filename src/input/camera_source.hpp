@@ -8,7 +8,7 @@
 
 class CameraSource : public FrameSource {
 public:
-    explicit CameraSource(const Camera::Config& cfg) : cfg_(cfg) {}
+    explicit CameraSource(const CameraConfig& cfg) : cfg_(cfg) {}
 
     bool open() override {
         return camera_.open(cfg_);
@@ -59,6 +59,6 @@ public:
 
 private:
     Camera camera_;
-    Camera::Config cfg_;
+    CameraConfig cfg_;
     int frameCount_ = 0;
 };

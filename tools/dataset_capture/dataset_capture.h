@@ -2,10 +2,11 @@
 /// @brief 原始数据集采集工具 — 仅采集图片, 不涉及推理。
 ///
 /// 功能:
-///   - 打开 USB 摄像头, 实时显示画面
+///   - 使用 Camera 类打开 USB 摄像头, 实时显示画面
 ///   - 按 interval_ms 自动保存原始 JPEG 图片
 ///   - 快捷键: ESC退出, SPACE立即保存, S暂停/恢复, R重新扫描编号
 ///   - 自动创建保存目录, 增量编号不覆盖已有图片
+///   - 摄像头参数完全由 YAML 控制 (CameraConfig)
 ///
 /// 使用:
 ///   DatasetCapture cap;
@@ -15,8 +16,8 @@
 #pragma once
 
 #include "config.h"
+#include "camera/camera.h"
 
-#include <opencv2/videoio.hpp>
 #include <opencv2/core.hpp>
 
 #include <chrono>
@@ -38,9 +39,6 @@ public:
     void Run();
 
 private:
-    /// 打开 USB 摄像头
-    bool OpenCamera();
-
     /// 保存一帧为 JPEG
     void SaveFrame(const cv::Mat& frame);
 
@@ -56,12 +54,10 @@ private:
     // ── 成员变量 ──────────────────────────────────────────────
 
     CaptureConfig cfg_;
-    cv::VideoCapture cap_;
+    Camera camera_;
     int nextIndex_ = 1;
     bool paused_   = false;
     bool running_  = true;
     int savedCount_ = 0;
-    double instantFps_ = 0.0;
     std::chrono::steady_clock::time_point lastSaveTime_;
-    std::chrono::steady_clock::time_point lastFrameTime_;
 };

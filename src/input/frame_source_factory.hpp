@@ -6,6 +6,7 @@
 #include "src/input/frame_source.hpp"
 #include "src/input/camera_source.hpp"
 #include "src/input/video_source.hpp"
+#include "camera/camera.h"
 
 #include <string>
 #include <memory>
@@ -17,32 +18,36 @@
 ///     type: "camera"  |  "video"
 ///
 ///   camera:
-///     id: 0
+///     device: 0
+///     backend: "V4L2"
 ///     width: 640
 ///     height: 480
 ///     fps: 30
+///     fourcc: "MJPG"
+///     ...
 ///
 ///   video:
 ///     path: "./data/test.mp4"
 ///     loop: false
 ///
 /// 使用示例:
-///   auto source = FrameSourceFactory::create(cfg);
+///   auto source = FrameSourceFactory::createFromYaml("config/vision.yaml");
 ///   if (!source || !source->open()) { /* error */ }
 ///   while (source->read(frame)) { /* process */ }
 
 class FrameSourceFactory {
 public:
-    /// 从 YAML 节点创建输入源
-    /// @param inputNode  YAML 的 "input" 节点
-    /// @param cameraNode YAML 的 "camera" 节点
-    /// @param videoNode  YAML 的 "video" 节点
+    /// 参数化创建输入源
+    /// @param inputType   "camera" | "video"
+    /// @param videoPath   视频文件路径
+    /// @param videoLoop   是否循环播放
+    /// @param camCfg      摄像头配置 (来自 CameraConfig::fromYaml)
     /// @return FrameSource 实例, 失败返回 nullptr
     static FrameSourcePtr create(
         const std::string& inputType,
         const std::string& videoPath,
         bool videoLoop,
-        int cameraId, int camWidth, int camHeight, int camFps);
+        const CameraConfig& camCfg);
 
     /// 便捷接口: 从 YAML 文件路径创建
     /// @param yamlPath  vision.yaml 文件路径

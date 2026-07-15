@@ -1,17 +1,13 @@
 /// @file config.h
-/// @brief Dataset Capture 轻量配置模块 — 独立于工程主 config 系统。
+/// @brief Dataset Capture 轻量配置模块 — 采集与显示参数。
+///
+/// 摄像头参数统一使用 CameraConfig (camera/camera.h)，不再在此定义。
 
 #pragma once
 
 #include <string>
 
 struct CaptureConfig {
-    // ── 摄像头 ────────────────────────────────────────────────
-    int    cameraDevice  = 0;
-    int    cameraWidth   = 1280;
-    int    cameraHeight  = 720;
-    int    cameraFps     = 30;
-
     // ── 采集 ──────────────────────────────────────────────────
     bool   captureEnable    = true;
     int    captureIntervalMs = 100;       ///< 自动保存间隔 (毫秒)
@@ -26,6 +22,7 @@ struct CaptureConfig {
     bool   showFps            = true;
     bool   showSavedCount     = true;
 
-    /// 从 YAML 文件加载配置
+    /// 从 YAML 文件加载采集/显示配置
+    /// @note 摄像头参数需单独通过 CameraConfig::fromYaml() 加载
     static CaptureConfig load(const std::string& yamlPath);
 };

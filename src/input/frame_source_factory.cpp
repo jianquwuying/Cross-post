@@ -1,5 +1,5 @@
 /// @file frame_source_factory.cpp
-/// @brief FrameSourceFactory 实现。
+/// @brief FrameSourceFactory 实现 — 使用 CameraConfig 统一配置。
 
 #include "src/input/frame_source_factory.hpp"
 
@@ -12,17 +12,10 @@ FrameSourcePtr FrameSourceFactory::create(
     const std::string& inputType,
     const std::string& videoPath,
     bool videoLoop,
-    int cameraId, int camWidth, int camHeight, int camFps)
+    const CameraConfig& camCfg)
 {
     if (inputType == "camera") {
-        Camera::Config cfg;
-        cfg.deviceId = cameraId;
-        cfg.width    = camWidth;
-        cfg.height   = camHeight;
-        cfg.fps      = camFps;
-        cfg.bufferSize = 1;
-
-        auto src = std::make_unique<CameraSource>(cfg);
+        auto src = std::make_unique<CameraSource>(camCfg);
         return src;
     }
 
@@ -59,20 +52,20 @@ FrameSourcePtr FrameSourceFactory::createFromYaml(const std::string& yamlPath)
                 videoLoop = root["video"]["loop"].as<bool>();
         }
 
-        // 读取摄像头参数
-        int camId = 0, camW = 640, camH = 480, camFps = 30;
-        if (root["camera"]) {
-            if (root["camera"]["id"])     camId  = root["camera"]["id"].as<int>();
-            if (root["camera"]["width"])  camW   = root["camera"]["width"].as<int>();
-            if (root["camera"]["height"]) camH   = root["camera"]["height"].as<int>();
-            if (root["camera"]["fps"])    camFps = root["camera"]["fps"].as<int>();
+        // 摄像头配置 — 严格解析, 无默认值
+        if (!root["camera"].IsDefined()) {
+            std::cerr << "\033[31m[Factory]\033[0m "
+                      << "Missing required 'camera' section in config"
+                      << std::endl;
+            return nullptr;
         }
+        CameraConfig camCfg = CameraConfig::fromYaml(root["camera"]);
 
-        return create(inputType, videoPath, videoLoop,
-                      camId, camW, camH, camFps);
+        return create(inputType, videoPath, videoLoop, camCfg);
 
     } catch (const YAML::Exception& e) {
-        std::cerr << "[Factory] YAML 解析失败: " << e.what() << std::endl;
+        std::cerr << "\033[31m[Factory]\033[0m YAML 解析失败: "
+                  << e.what() << std::endl;
         return nullptr;
     }
 }

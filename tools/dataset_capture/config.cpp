@@ -1,5 +1,5 @@
 /// @file config.cpp
-/// @brief YAML 配置加载实现。
+/// @brief YAML 配置加载实现 — 仅采集和显示参数。
 
 #include "config.h"
 
@@ -12,20 +12,11 @@ CaptureConfig CaptureConfig::load(const std::string& yamlPath) {
     try {
         YAML::Node root = YAML::LoadFile(yamlPath);
 
-        // ── 摄像头 ──────────────────────────────────────────
-        if (root["camera"].IsDefined()) {
-            auto c = root["camera"];
-            if (c["device"].IsDefined())  cfg.cameraDevice  = c["device"].as<int>();
-            if (c["width"].IsDefined())   cfg.cameraWidth   = c["width"].as<int>();
-            if (c["height"].IsDefined())  cfg.cameraHeight  = c["height"].as<int>();
-            if (c["fps"].IsDefined())     cfg.cameraFps     = c["fps"].as<int>();
-        }
-
         // ── 采集 ────────────────────────────────────────────
         if (root["capture"].IsDefined()) {
             auto cp = root["capture"];
             if (cp["enable"].IsDefined())
-                cfg.captureEnable = (cp["enable"].as<int>() != 0);
+                cfg.captureEnable = cp["enable"].as<bool>();
             if (cp["interval_ms"].IsDefined())
                 cfg.captureIntervalMs = cp["interval_ms"].as<int>();
             if (cp["save_dir"].IsDefined())
@@ -42,13 +33,13 @@ CaptureConfig CaptureConfig::load(const std::string& yamlPath) {
         if (root["display"].IsDefined()) {
             auto d = root["display"];
             if (d["enable"].IsDefined())
-                cfg.displayEnable = (d["enable"].as<int>() != 0);
+                cfg.displayEnable = d["enable"].as<bool>();
             if (d["show_window"].IsDefined())
-                cfg.showWindow = (d["show_window"].as<int>() != 0);
+                cfg.showWindow = d["show_window"].as<bool>();
             if (d["show_fps"].IsDefined())
-                cfg.showFps = (d["show_fps"].as<int>() != 0);
+                cfg.showFps = d["show_fps"].as<bool>();
             if (d["show_saved_count"].IsDefined())
-                cfg.showSavedCount = (d["show_saved_count"].as<int>() != 0);
+                cfg.showSavedCount = d["show_saved_count"].as<bool>();
         }
 
         std::cout << "\033[32m[INFO]\033[0m 配置已加载: " << yamlPath << "\n";

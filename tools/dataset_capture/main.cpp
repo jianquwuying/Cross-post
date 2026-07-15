@@ -4,7 +4,7 @@
 /// 用法:
 ///   ./dataset_capture [--config vision.yaml]
 ///
-/// 仅依赖 OpenCV + yaml-cpp, 不加载 NCNN/YOLO/Serial 等推理模块。
+/// 使用 Camera 类统一管理摄像头, 参数完全由 YAML 控制。
 
 #include "dataset_capture.h"
 
@@ -40,6 +40,9 @@ int main(int argc, char* argv[]) {
             return 0;
         }
     }
+
+    // 关闭 g_running 标志传递 (DatasetCapture 内部管理运行状态)
+    (void)g_running;
 
     DatasetCapture cap;
     if (!cap.Init(configPath)) {

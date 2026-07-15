@@ -400,16 +400,8 @@ int main(int argc, char* argv[]) {
     roi.configure(roiCfg);
 
     // ── 初始化摄像头 ──────────────────────────────────────────
-    Camera::Config camCfg;
-    camCfg.deviceId   = cfg.camera.deviceId;
-    camCfg.width      = cfg.camera.width;
-    camCfg.height     = cfg.camera.height;
-    camCfg.fps        = cfg.camera.fps;
-    camCfg.fourcc     = cfg.camera.fourcc;
-    camCfg.bufferSize = cfg.camera.bufferSize;
-
     Camera camera;
-    if (!camera.open(camCfg)) {
+    if (!camera.open(cfg.camera)) {
         LOG_ERROR << "无法打开摄像头";
         return 1;
     }
