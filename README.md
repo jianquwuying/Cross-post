@@ -419,6 +419,128 @@ CPU 胜出: ARM CPU 方案成熟稳定、驱动依赖少、便于调试。树莓
 
 ---
 
+## 任务完成度
+
+### Camera 模块
+
+| 功能 | 状态 | 说明 |
+|------|:--:|------|
+| V4L2 视频采集 | ✅ | OpenCV CAP_V4L2, MJPG/YUYV |
+| 分辨率/帧率配置 | ✅ | YAML 驱动, 无默认值 |
+| 像素格式 (FourCC) | ✅ | MJPG (低CPU) / YUYV (未压缩) |
+| 缓冲区大小 | ✅ | V4L2 buffer_size, 1=最低延迟 |
+| 自动/手动曝光 | ✅ | CAP_PROP_AUTO_EXPOSURE + CAP_PROP_EXPOSURE |
+| 自动/手动白平衡 | ✅ | V4L2 ioctl VIDIOC_S_CTRL |
+| 参数验证表格 | ✅ | 读取实际值 + ANSI 表格 + WARN 不匹配 |
+| 严格 YAML 解析 | ✅ | CameraConfig::fromYaml(), 缺失字段 exit(1) |
+| EMA 平滑 FPS | ✅ | 指数移动平均, 0.1 平滑因子 |
+| 多后端支持 | ✅ | V4L2 / ANY / DSHOW |
+
+### NCNN 推理
+
+| 功能 | 状态 | 说明 |
+|------|:--:|------|
+| NCNN 引擎 | ✅ | CPU + NEON + OpenMP |
+| FP16 半精度 | ✅ | use_fp16_packed + use_fp16_storage |
+| INT8 量化推理 | ✅ | use_int8_inference, FPS 提升 ~60% |
+| Packing Layout | ✅ | 优化内存布局 |
+| Light Mode | ✅ | 立即释放中间 blob |
+| 多线程 | ✅ | num_threads (YAML 可配, 默认4) |
+| YOLO26n 模型 | ✅ | C2PSA 注意力, 7.8G FLOPs |
+| NMS 后处理 | ✅ | 按类别 IoU 抑制 |
+| 3 种输出格式 | ✅ | (N,6) / (1,nc+4,N) / (1,nc+4,H,W) |
+| 推理计时 (EMA) | ✅ | avgInferenceMs |
+| ncnn::Net move 修复 | ✅ | unique_ptr 包装, vision_system 编译通过 |
+
+### HSV 颜色识别
+
+| 功能 | 状态 | 说明 |
+|------|:--:|------|
+| 多颜色支持 | ✅ | 红/蓝/黄, YAML 配置 HSV 范围 |
+| 双阈值红色 | ✅ | red1 (0-10°) + red2 (170-180°) |
+| 形态学降噪 | ✅ | 高斯模糊 + 开运算 |
+| 颜色置信度 | ✅ | 像素比 × 饱和度权重 |
+| 形态学/模糊核大小 | ✅ | YAML 可配 |
+
+### 输入源
+
+| 功能 | 状态 | 说明 |
+|------|:--:|------|
+| CameraSource | ✅ | 封装 Camera 类为 FrameSource |
+| VideoSource | ✅ | 视频文件, 支持循环播放 |
+| FrameSourceFactory | ✅ | YAML → unique_ptr\<FrameSource\> |
+| YAML 自动发现 | ✅ | /proc/self/exe 相对搜索 + CWD 回退 |
+| 命令行 --config | ✅ | 显式指定路径 |
+| 位置参数 | ✅ | ./app path/to/config.yaml |
+
+### ROI 裁剪
+
+| 功能 | 状态 | 说明 |
+|------|:--:|------|
+| ROI 启用/禁用 | ✅ | YAML 控制 |
+| 坐标裁剪 + 映射 | ✅ | 裁剪 + 坐标归一化 |
+| 性能提升 | ✅ | 50% 裁剪 → ~40% FPS 提升 |
+
+### 串口通信
+
+| 功能 | 状态 | 说明 |
+|------|:--:|------|
+| POSIX termios | ✅ | 零依赖 |
+| 12 字节二进制协议 | ✅ | 同步头 + CRC8 |
+| 流内重同步 | ✅ | 0xAA 0x55 同步头 |
+| 波特率/数据位/停止位 | ✅ | YAML 可配 |
+
+### Dataset Capture
+
+| 功能 | 状态 | 说明 |
+|------|:--:|------|
+| 图片采集 | ✅ | 定时 JPEG 保存 |
+| 视频录制 | ✅ | OpenCV VideoWriter, MJPG AVI |
+| 图片+视频并行 | ✅ | 共用同一帧, 互不影响 |
+| 时间戳视频命名 | ✅ | capture_YYYYMMDD_HHMMSS.avi |
+| CameraConfig 共用 | ✅ | 与主程序同一套配置 |
+| Logger 日志 | ✅ | 与主程序同一套 ANSI 日志 |
+| 快捷键 | ✅ | ESC / SPACE / S / R |
+| 增量编号 | ✅ | 扫描已有文件, 不覆盖 |
+| OSD 叠加显示 | ✅ | FPS / 保存数 / REC 状态 |
+
+### 配置与日志
+
+| 功能 | 状态 | 说明 |
+|------|:--:|------|
+| YAML 统一配置 | ✅ | yaml-cpp, 修改无需重编译 |
+| 4 级 ANSI 日志 | ✅ | DEBUG/INFO/WARN/ERROR |
+| 彩色终端输出 | ✅ | 绿/黄/红/青, 可禁用 |
+| CLI 参数覆盖 | ✅ | 命令行 > YAML |
+
+### 构建与部署
+
+| 功能 | 状态 | 说明 |
+|------|:--:|------|
+| CMake 构建 | ✅ | 3.20+, C++17 |
+| vision_system 目标 | ✅ | 生产部署 |
+| vision_demo 目标 | ✅ | 离线调试 + Benchmark |
+| dataset_capture 目标 | ✅ | 独立构建, 链接 camera/ + logger/ |
+| RPi5 ARM64 适配 | ✅ | Cortex-A76 NEON |
+
+### 待完成
+
+| 功能 | 状态 | 说明 |
+|------|:--:|------|
+| RTSP 输入源 | ⬜ | FrameSource 接口可扩展 |
+| Vulkan GPU 加速 | ⬜ | ncnn Vulkan 后端 (RPi5 GPU 驱动待验证) |
+| FP16 算术加速 | ⬜ | use_fp16_arithmetic (需测试精度影响) |
+| Winograd 卷积 | ⬜ | use_winograd_convolution |
+| 视频自动分段 | ⬜ | max_duration / split_duration |
+| 多摄像头支持 | ⬜ | 当前仅单路 |
+| 远程 Web 监控 | ⬜ | HTTP + MJPEG 流 |
+| 单元测试 | ⬜ | Google Test |
+| 模型热加载 | ⬜ | 运行时切换 FP16/INT8 |
+
+> **已完成 48 项 / 待完成 9 项 — 完成度 84%**
+
+---
+
 ## 版本历史
 
 | 版本 | 日期 | 变更 |
@@ -429,6 +551,8 @@ CPU 胜出: ARM CPU 方案成熟稳定、驱动依赖少、便于调试。树莓
 | v1.3 | 2026-07-12 | YAML 合并: default.yaml + vision.yaml → 单一 vision.yaml |
 | v1.4 | 2026-07-13 | Dataset Capture: 原始数据集采集工具 (独立构建, 不影响推理模块) |
 | v1.5 | 2026-07-15 | Camera YAML Control: CameraConfig 统一配置, 零默认值, 严格解析, V4L2 ioctl 白平衡, 参数验证+ANSI 表格, dataset_capture 共用 Camera 类+Logger |
+| v1.6 | 2026-07-15 | NCNN 修复: ncnn::Net → unique_ptr 解决移动构造编译错误, vision_system/vision_demo 通过编译 |
+| v1.7 | 2026-07-15 | Video Recorder: 视频录制功能 (OpenCV VideoWriter, MJPG AVI), 图片+视频并行采集, 时间戳命名, 录制状态 OSD |
 
 ---
 

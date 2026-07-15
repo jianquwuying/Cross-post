@@ -8,12 +8,14 @@
 
 // ── YOLO26Detector ────────────────────────────────────────────────
 
-YOLO26Detector::YOLO26Detector()  = default;
-YOLO26Detector::~YOLO26Detector() { net_.clear(); }
+YOLO26Detector::YOLO26Detector()
+    : net_(std::make_unique<ncnn::Net>()) {}
+
+YOLO26Detector::~YOLO26Detector() = default;
 
 YOLO26Detector::YOLO26Detector(YOLO26Detector&& other) noexcept
     : net_(std::move(other.net_))
-    , config_(other.config_)
+    , config_(std::move(other.config_))
     , loaded_(other.loaded_)
 {
     avgInferenceMs_.store(other.avgInferenceMs_.load());
@@ -22,9 +24,8 @@ YOLO26Detector::YOLO26Detector(YOLO26Detector&& other) noexcept
 
 YOLO26Detector& YOLO26Detector::operator=(YOLO26Detector&& other) noexcept {
     if (this != &other) {
-        net_.clear();
-        net_ = std::move(other.net_);
-        config_ = other.config_;
+        net_    = std::move(other.net_);
+        config_ = std::move(other.config_);
         loaded_ = other.loaded_;
         avgInferenceMs_.store(other.avgInferenceMs_.load());
         other.loaded_ = false;
@@ -35,6 +36,9 @@ YOLO26Detector& YOLO26Detector::operator=(YOLO26Detector&& other) noexcept {
 bool YOLO26Detector::load(const Config& config) {
     config_ = config;
 
+    // 移动后 re-initialize
+    if (!net_) net_ = std::make_unique<ncnn::Net>();
+
     // ── 推导模型路径 ───────────────────────────────────────────
     std::string subdir = (config_.modelType == ModelType::INT8) ? "int8" : "fp16";
     config_.paramPath = config_.modelDir + "/" + subdir + "/model.ncnn.param";
@@ -42,31 +46,31 @@ bool YOLO26Detector::load(const Config& config) {
 
     // ── 配置 NCNN 选项 ─────────────────────────────────────────
     // 默认使用 CPU + NEON + OpenMP, 不启用 Vulkan
-    net_.opt.use_vulkan_compute = false;
+    net_->opt.use_vulkan_compute = false;
 
     // CPU 线程数 (OpenMP 多线程)
-    net_.opt.num_threads = config_.numThreads;
+    net_->opt.num_threads = config_.numThreads;
 
     // 根据模型类型设置不同的优化标志
     if (config_.modelType == ModelType::INT8) {
         // INT8 量化模型 — 启用 INT8 推理
-        net_.opt.use_int8_inference  = true;
-        net_.opt.use_fp16_packed    = false;
-        net_.opt.use_fp16_storage   = false;
-        net_.opt.use_fp16_arithmetic = false;
+        net_->opt.use_int8_inference  = true;
+        net_->opt.use_fp16_packed    = false;
+        net_->opt.use_fp16_storage   = false;
+        net_->opt.use_fp16_arithmetic = false;
         std::cout << "[YOLO] INT8 推理模式" << std::endl;
     } else {
         // FP16 模型 — ARM NEON FP16 加速
-        net_.opt.use_int8_inference  = false;
-        net_.opt.use_fp16_packed    = true;   // ARM 上更快
-        net_.opt.use_fp16_storage   = true;   // 节省内存
-        net_.opt.use_fp16_arithmetic = false;  // 中间层保持 FP32 精度
+        net_->opt.use_int8_inference  = false;
+        net_->opt.use_fp16_packed    = true;   // ARM 上更快
+        net_->opt.use_fp16_storage   = true;   // 节省内存
+        net_->opt.use_fp16_arithmetic = false;  // 中间层保持 FP32 精度
         std::cout << "[YOLO] FP16 推理模式" << std::endl;
     }
 
     // 通用优化
-    net_.opt.use_packing_layout = true;   // 优化内存布局
-    net_.opt.lightmode          = true;   // 使用后立即释放中间 blob
+    net_->opt.use_packing_layout = true;   // 优化内存布局
+    net_->opt.lightmode          = true;   // 使用后立即释放中间 blob
 
     std::cout << "[YOLO] 加载模型: " << config_.paramPath << std::endl;
     std::cout << "[YOLO]   类型=" << modelTypeStr(config_.modelType)
@@ -75,14 +79,14 @@ bool YOLO26Detector::load(const Config& config) {
               << std::endl;
 
     // ── 加载模型文件 ───────────────────────────────────────────
-    int ret = net_.load_param(config_.paramPath.c_str());
+    int ret = net_->load_param(config_.paramPath.c_str());
     if (ret != 0) {
         std::cerr << "[YOLO] 错误: 无法加载 param 文件: "
                   << config_.paramPath << " (错误码=" << ret << ")" << std::endl;
         return false;
     }
 
-    ret = net_.load_model(config_.binPath.c_str());
+    ret = net_->load_model(config_.binPath.c_str());
     if (ret != 0) {
         std::cerr << "[YOLO] 错误: 无法加载 bin 文件: "
                   << config_.binPath << " (错误码=" << ret << ")" << std::endl;
@@ -144,7 +148,7 @@ bool YOLO26Detector::detect(const cv::Mat& bgrImage,
     preprocess(bgrImage, input);
 
     // ── 步骤2: 创建提取器 ─────────────────────────────────────
-    ncnn::Extractor ex = net_.create_extractor();
+    ncnn::Extractor ex = net_->create_extractor();
 
     // 每个提取器可独立启用轻量模式
     ex.set_light_mode(true);

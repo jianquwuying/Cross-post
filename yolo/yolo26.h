@@ -17,6 +17,7 @@
 #include <string>
 #include <chrono>
 #include <atomic>
+#include <memory>
 
 // ── 模型类型 ──────────────────────────────────────────────────────
 
@@ -127,7 +128,7 @@ private:
     static cv::Rect_<float> clipBox(const cv::Rect_<float>& box,
                                      int imgW, int imgH);
 
-    ncnn::Net net_;
+    std::unique_ptr<ncnn::Net> net_;
     Config   config_;
     bool     loaded_ = false;
 

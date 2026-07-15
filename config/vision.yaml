@@ -5,7 +5,7 @@
 
 # ── 输入源选择 ──────────────────────────────────────────────────
 input:
-  type: "camera"          # "camera" (实时摄像头) | "video" (离线视频文件)
+  type: "video"          # "camera" (实时摄像头) | "video" (离线视频文件)
 
 # ── 摄像头参数 (input.type=camera 时生效) ───────────────────────
 #   实际硬件: USB Camera (uvcvideo), /dev/video0, S/N: 200901010001
