@@ -31,19 +31,22 @@ ColorResult HSVClassifier::classify(const cv::Mat& bgrROI) const {
 
     result.ratioRed    = colorRatio(hsv, config_.red1.low, config_.red1.high, mksz)
                        + colorRatio(hsv, config_.red2.low, config_.red2.high, mksz);
-    // 红色占比上限为 1.0（两个范围理论上可能重叠）
     result.ratioRed    = std::min(result.ratioRed, 1.0f);
-
-    result.ratioBlue   = colorRatio(hsv, config_.blue.low,   config_.blue.high,   mksz);
     result.ratioYellow = colorRatio(hsv, config_.yellow.low, config_.yellow.high, mksz);
+    result.ratioBlue   = colorRatio(hsv, config_.blue.low,   config_.blue.high,   mksz);
+    result.ratioGreen  = colorRatio(hsv, config_.green.low,  config_.green.high,  mksz);
+    result.ratioBlack  = colorRatio(hsv, config_.black.low,  config_.black.high,  mksz);
+    result.ratioCyan   = colorRatio(hsv, config_.cyan.low,   config_.cyan.high,   mksz);
 
     // ── 步骤4: 判定主导颜色 ───────────────────────────────────
-    // 找出超过颜色置信度阈值且占比最高的颜色
     struct Candidate { Color c; float r; };
     std::vector<Candidate> candidates = {
         { Color::Red,    result.ratioRed    },
-        { Color::Blue,   result.ratioBlue   },
         { Color::Yellow, result.ratioYellow },
+        { Color::Blue,   result.ratioBlue   },
+        { Color::Green,  result.ratioGreen  },
+        { Color::Black,  result.ratioBlack  },
+        { Color::Cyan,   result.ratioCyan   },
     };
 
     std::sort(candidates.begin(), candidates.end(),

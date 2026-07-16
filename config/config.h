@@ -11,6 +11,7 @@
 
 #include "camera/camera.h"
 
+#include <set>
 #include <string>
 #include <vector>
 
@@ -34,7 +35,10 @@ struct AppConfig {
 
     // ── 检测控制 ──────────────────────────────────────────────
     struct DetectCfg {
-        int    skipFrames = 0;     ///< 跳帧: 0=每帧检测, 1=隔帧, 2=每3帧
+        int    skipFrames          = 0;      ///< 跳帧: 0=每帧检测, 1=隔帧, 2=每3帧
+        float  confThreshold       = 0.45f;  ///< DetectionFilter 最低置信度
+        int    maxTargets          = 10;     ///< Top-K 最多保留数
+        std::set<int> allowedClasses = {0, 1, 2};  ///< 类别白名单
     } detect;
 
     // ── ROI 裁剪 ──────────────────────────────────────────────

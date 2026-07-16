@@ -15,28 +15,40 @@
 #pragma once
 
 #include <opencv2/core.hpp>
+#include "protocol/protocol.h"
 
 #include <string>
 #include <vector>
 
 // ── 颜色枚举 ──────────────────────────────────────────────────────
 
-/// 颜色分类结果
+/// 颜色分类结果 (与 protocol::ColorType 值一一对应)
 enum class Color : uint8_t {
     Unknown = 0,   ///< 未知
     Red     = 1,   ///< 红色
-    Blue    = 2,   ///< 蓝色
-    Yellow  = 3,   ///< 黄色
+    Yellow  = 2,   ///< 黄色
+    Blue    = 3,   ///< 蓝色
+    Green   = 4,   ///< 绿色
+    Black   = 5,   ///< 黑色
+    Cyan    = 6,   ///< 青色
 };
 
-/// 颜色名称（便于调试输出）
+/// 颜色名称 (中英文, 便于调试输出)
 inline const char* colorName(Color c) {
     switch (c) {
-        case Color::Red:     return "红";
-        case Color::Blue:    return "蓝";
-        case Color::Yellow:  return "黄";
-        default:             return "未知";
+        case Color::Red:     return "Red";
+        case Color::Yellow:  return "Yellow";
+        case Color::Blue:    return "Blue";
+        case Color::Green:   return "Green";
+        case Color::Black:   return "Black";
+        case Color::Cyan:    return "Cyan";
+        default:             return "Unknown";
     }
+}
+
+/// Color → protocol::ColorType (值相同, 直接转换)
+inline protocol::ColorType toProtoColor(Color c) {
+    return static_cast<protocol::ColorType>(c);
 }
 
 // ── HSV 分类结果 ──────────────────────────────────────────────────
@@ -45,9 +57,12 @@ inline const char* colorName(Color c) {
 struct ColorResult {
     Color  color      = Color::Unknown;   ///< 主导颜色
     float  confidence = 0.0f;             ///< 主导颜色像素占比
-    float  ratioRed   = 0.0f;             ///< 红色像素占比
-    float  ratioBlue  = 0.0f;             ///< 蓝色像素占比
-    float  ratioYellow= 0.0f;             ///< 黄色像素占比
+    float  ratioRed    = 0.0f;            ///< 红色像素占比
+    float  ratioYellow = 0.0f;            ///< 黄色像素占比
+    float  ratioBlue   = 0.0f;            ///< 蓝色像素占比
+    float  ratioGreen  = 0.0f;            ///< 绿色像素占比
+    float  ratioBlack  = 0.0f;            ///< 黑色像素占比
+    float  ratioCyan   = 0.0f;            ///< 青色像素占比
 };
 
 // ── HSV 分类器 ────────────────────────────────────────────────────
@@ -85,8 +100,11 @@ public:
         // 红色: 两个范围, 因为 hue 在 0°/180° 处环绕
         HSVRange red1    = { cv::Scalar(  0, 100, 100), cv::Scalar( 10, 255, 255) };
         HSVRange red2    = { cv::Scalar(170, 100, 100), cv::Scalar(180, 255, 255) };
-        HSVRange blue    = { cv::Scalar(100, 100,  50), cv::Scalar(130, 255, 255) };
         HSVRange yellow  = { cv::Scalar( 20, 100, 100), cv::Scalar( 35, 255, 255) };
+        HSVRange blue    = { cv::Scalar(100, 100,  50), cv::Scalar(130, 255, 255) };
+        HSVRange green   = { cv::Scalar( 40,  50,  50), cv::Scalar( 80, 255, 255) };
+        HSVRange black   = { cv::Scalar(  0,   0,   0), cv::Scalar(180, 255,  50) };
+        HSVRange cyan    = { cv::Scalar( 80,  50,  50), cv::Scalar(100, 255, 255) };
     };
 
     HSVClassifier() = default;
@@ -107,9 +125,12 @@ public:
     void setConfig(const Config& c) { config_ = c; }
 
     /// 动态调整 HSV 范围（运行时标定）
-    void setRedRange(  const HSVRange& r1, const HSVRange& r2) { config_.red1 = r1; config_.red2 = r2; }
-    void setBlueRange( const HSVRange& r)  { config_.blue   = r; }
-    void setYellowRange(const HSVRange& r) { config_.yellow = r; }
+    void setRedRange(   const HSVRange& r1, const HSVRange& r2) { config_.red1 = r1; config_.red2 = r2; }
+    void setYellowRange( const HSVRange& r) { config_.yellow = r; }
+    void setBlueRange(  const HSVRange& r)  { config_.blue   = r; }
+    void setGreenRange( const HSVRange& r)  { config_.green  = r; }
+    void setBlackRange( const HSVRange& r)  { config_.black  = r; }
+    void setCyanRange(  const HSVRange& r)  { config_.cyan   = r; }
 
     /// 从 HSV 图像中计算指定颜色范围的像素占比（静态工具函数）
     static float colorRatio(const cv::Mat& hsvROI,

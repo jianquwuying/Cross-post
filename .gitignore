@@ -31,6 +31,8 @@ runs/
 __pycache__/
 *.pyc
 .conda/
+data/
+model/
 
 # 操作系统
 .DS_Store

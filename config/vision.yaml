@@ -27,12 +27,12 @@ camera:
 
 # ── 视频参数 (input.type=video 时生效) ──────────────────────────
 video:
-  path: "./data/test.mp4"
+  path: "../data/videos/demo.avi"
   loop: false             # 播放结束后是否循环
 
 # ── YOLO 检测配置 ──────────────────────────────────────────────
 yolo:
-  model_dir: "model"      # 模型根目录
+  model_dir: "../model"    # 模型根目录 (相对 build/ → 项目根)
   model_type: "int8"      # "fp16" (高精度) | "int8" (高速度)
   input_width: 320
   input_height: 320
@@ -43,7 +43,10 @@ yolo:
 
 # ── 检测控制 ───────────────────────────────────────────────────
 detect:
-  skip_frames: 0          # 0=每帧检测, 1=隔帧, 2=每3帧...
+  skip_frames: 0               # 0=每帧检测, 1=隔帧, 2=每3帧...
+  confidence_threshold: 0.45   # DetectionFilter 最低置信度 (低于此值直接丢弃)
+  max_targets: 10              # Top-K 最多保留目标数
+  class_filter: [0, 1, 2]      # 类别白名单: 0=Material 1=ColorRing 2=Obstacle
 
 # ── ROI 区域裁剪 ───────────────────────────────────────────────
 roi:
@@ -68,7 +71,7 @@ color:
   blue:  { h_low: 100, s_low: 100, v_low: 50,  h_high: 130, s_high: 255, v_high: 255 }
 
   # 黄色
-  yellow:{ h_low: 20,  s_low: 100, v_low: 100, h_high: 35,  s_high: 255, v_high: 255 }
+  yellow: { h_low: 20,  s_low: 100, v_low: 100, h_high: 35,  s_high: 255, v_high: 255 }
 
 # ── 串口配置 ──────────────────────────────────────────────────
 serial:

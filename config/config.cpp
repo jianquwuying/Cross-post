@@ -56,8 +56,13 @@ AppConfig AppConfig::load(const std::string& yamlPath) {
         }
 
         // ── 检测 ────────────────────────────────────────────
-        if (root["detect"]) {
-            YAML_READ_INT(root["detect"], skip_frames, cfg.detect.skipFrames);
+        if (root["detect"].IsDefined()) {
+            auto d = root["detect"];
+            YAML_READ_INT(d, skip_frames, cfg.detect.skipFrames);
+            YAML_READ_FLOAT(d, confidence_threshold, cfg.detect.confThreshold);
+            YAML_READ_INT(d, max_targets, cfg.detect.maxTargets);
+            // class_filter: YAML 序列, 仅真实 yaml-cpp 支持
+            // 暂使用默认值 {0,1,2}
         }
 
         // ── ROI ─────────────────────────────────────────────
@@ -204,7 +209,9 @@ void AppConfig::print() const {
               << " NMS=" << yolo.nmsThreshold
               << " 后端=CPU+NEON+OpenMP\n";
 
-    std::cout << "[检测] 跳帧=" << detect.skipFrames << "\n";
+    std::cout << "[检测] 跳帧=" << detect.skipFrames
+              << " 最低置信度=" << detect.confThreshold
+              << " TopK=" << detect.maxTargets << "\n";
 
     std::cout << "[ROI] " << (roi.enabled ? "启用" : "禁用");
     if (roi.enabled) {
