@@ -2,7 +2,7 @@
 
 > 本文档用于在新对话中快速恢复完整项目上下文。包含所有已完成工作、架构决策、当前状态和待办事项。
 >
-> 生成时间: 2026-07-16 | 版本: v1.5 | 代码量: 5,148 行 | 文件数: 43
+> 生成时间: 2026-07-20 | 版本: v1.6.1 | 代码量: 5,148 行 | 文件数: 43
 
 ---
 
@@ -40,19 +40,18 @@ GPU:    RTX4060 Laptop GPU
 | Git | 2.43.0 | 系统 |
 | OpenCV | 4.8.0 | `/usr/local` (源码编译) |
 | libprotobuf | 3.21.12 | 系统 (仅运行时库, dev缺失) |
+| yaml-cpp | 0.8.0 | 系统 (apt 安装) |
+| NCNN | latest | `/usr/local` (源码编译, 静态库 libncnn.a) |
 | Vulkan | 1.3.275 | Mesa 25.2.8 (仅库, 未使用) |
 
-### 待安装 (需要 sudo)
+### 编译产物 (已验证)
 
-```bash
-sudo apt install protobuf-compiler libprotobuf-dev libyaml-cpp-dev
-# NCNN 从源码编译:
-git clone https://github.com/Tencent/ncnn.git
-cd ncnn && mkdir build && cd build
-cmake -DCMAKE_BUILD_TYPE=Release -DNCNN_VULKAN=OFF -DNCNN_OPENMP=ON \
-      -DNCNN_BUILD_TOOLS=ON -DNCNN_BUILD_BENCHMARK=ON -DNCNN_BUILD_EXAMPLES=OFF ..
-make -j4 && sudo make install && sudo ldconfig
-```
+| 可执行文件 | 大小 | 架构 | 动态依赖 |
+|-----------|------|------|---------|
+| vision_system | ~5MB | ARM aarch64 | libyaml-cpp.so (NCNN 静态链接) |
+| vision_demo | ~5MB | ARM aarch64 | libyaml-cpp.so (NCNN 静态链接) |
+
+> NCNN 以 `libncnn.a` 静态库链接进二进制，`ldd` 不显示 NCNN 依赖属正常行为。
 
 ---
 
@@ -238,14 +237,16 @@ struct DetectionResult {
 - [x] 多线程 SafeQueue (背压, 优雅关闭)
 - [x] NCNN 训练指南 (数据增强策略, 导出流程)
 - [x] ARM64 编译验证通过 (全部3个可执行文件)
+- [x] NCNN 源码编译安装 (ARM aarch64, CPU+NEON+OpenMP)
+- [x] 真实编译通过 — vision_system + vision_demo 均已生成 (~5MB, ARM aarch64)
 - [x] 完整文档 (README.md + PROJECT_CONTEXT.md)
 
 ## 八、待完成任务 (❌/⚠️)
 
 ### 阻塞项 (需要 sudo)
-- [ ] `sudo apt install protobuf-compiler libprotobuf-dev libyaml-cpp-dev`
-- [ ] 编译安装 NCNN: `git clone ... && make -j4 && sudo make install`
-- [ ] 真实编译: `cd build && cmake .. && make -j4` (当前用stub编译通过)
+- [x] ~~`sudo apt install protobuf-compiler libprotobuf-dev libyaml-cpp-dev`~~ ✅ 已完成
+- [x] ~~编译安装 NCNN~~ ✅ 已完成 (ARM aarch64, CPU+NEON+OpenMP)
+- [x] ~~真实编译~~ ✅ 已完成 — vision_system + vision_demo 均已生成 (~5MB)
 
 ### 需要物理硬件
 - [ ] 连接 USB 摄像头 + 验证 `v4l2-ctl --list-devices`
@@ -281,10 +282,12 @@ cat PROJECT_CONTEXT.md     # 本文档 (开发上下文)
 
 ### 第二步: 确认环境
 ```bash
-g++ --version              # 应为 13.3.0
-cmake --version            # 应为 3.28+
-pkg-config --modversion opencv4  # 应为 4.8.0
-ls /usr/local/include/ncnn/net.h # NCNN是否已安装
+g++ --version                     # 应为 13.3.0
+cmake --version                   # 应为 3.28+
+pkg-config --modversion opencv4   # 应为 4.8.0
+ls /usr/local/lib/libncnn.a       # NCNN 静态库 (已安装)
+ls /usr/local/include/ncnn/net.h  # NCNN 头文件 (已安装)
+dpkg -l | grep yaml-cpp           # libyaml-cpp-dev (已安装)
 ```
 
 ### 第三步: 编译项目
@@ -292,9 +295,9 @@ ls /usr/local/include/ncnn/net.h # NCNN是否已安装
 cd /home/shu/Cross-post
 mkdir -p build && cd build
 cmake -DCMAKE_BUILD_TYPE=Release .. && make -j4
+# 产物: vision_system (~5MB) + vision_demo (~5MB), ARM aarch64
+# ldd 仅显示 libyaml-cpp.so — NCNN 以 libncnn.a 静态链接, 属正常行为
 ```
-如果报错 `net.h: No such file` → 需要先编译安装 NCNN (见第四节)
-如果报错 `yaml-cpp/yaml.h: No such file` → `sudo apt install libyaml-cpp-dev`
 
 ### 第四步: 运行 Demo (无需硬件)
 ```bash
@@ -338,6 +341,123 @@ python3 -c "import serial; s=serial.Serial('/dev/ttyAMA0',115200); s.write(b'\xC
 | v1.3 | 07-12 | 合并: default.yaml+vision.yaml→单一vision.yaml |
 | v1.4 | 07-13 | 采集: Dataset Capture (图片+视频, 复用Camera+Logger) |
 | v1.5 | 07-16 | 协议: 9字节0xCD/0xDC, DetectionFilter, PacketEncoder, 7色HSV |
+| v1.6 | 07-18 | 部署: NCNN 源码编译安装, yaml-cpp 安装, 真实编译通过 (ARM aarch64) |
+| v1.6.1 | 07-20 | 修复: YAML bool as<int>()→as<bool>() 解析崩溃, 模型文件名 model→yolo26n, 默认FP16 |
+
+---
+
+## 十一、NCNN 模型转换排障全记录
+
+> 2026-07-18 实战总结。在树莓派5上部署 YOLO26n NCNN 模型的完整排障过程。
+> **最终方案**: 使用 `ultralytics.export(format='ncnn')` 生成无后处理的纯推理模型。
+
+### 遇到的错误序列及解决
+
+| # | 错误 | 根因 | 解决 |
+|---|------|------|------|
+| 1 | `fopen ... failed (错误码=-1)` | param 文件名 `model.ncnn.param` vs 实际 `yolo26n.ncnn.param` | 代码改为 `yolo26n.ncnn.param` |
+| 2 | `param is too old` | magic 7767517 > NCNN 编译版本 20260712 | `git pull origin master && make -j4 && sudo make install` |
+| 3 | `layer ReduceMax not exists` | pnnx 导出包含合并的后处理层，NCNN 不支持 | 改 param: `ReduceMax` → `Reduction 0=4` (临时方案) |
+| 4 | `layer torch.topk not exists` | 同上，TopK 后处理层不应在推理图中 | **根本解决**: 用 ultralytics 官方 export |
+
+### 最终方案: Ultralytics 官方导出
+
+```bash
+# 训练端 (x86_64)
+conda activate yolo26
+pip install ultralytics[export]
+
+python -c "
+from ultralytics import YOLO
+model = YOLO('yolo26n.pt')
+model.export(format='ncnn', imgsz=320)
+"
+
+# 验证无后处理层
+grep -i topk yolo26n_ncnn_model/*.param  # 应无输出
+
+# 重命名 + 传输
+cd yolo26n_ncnn_model
+mv yolo26n_ncnn_model.param yolo26n.ncnn.param
+mv yolo26n_ncnn_model.bin   yolo26n.ncnn.bin
+scp yolo26n.ncnn.* shu@rpi5:/home/shu/Cross-post/model/fp16/
+```
+
+### 核心原则
+
+- **NCNN 不支持后处理层 (TopK/NMS/ReduceMax 等)**，这些应在 C++ 应用层完成
+- **始终用 `model.export(format='ncnn')`** 而非手动 pnnx/onnx2ncnn
+- **NCNN 版本 >= pnnx 导出版本**，否则 magic 不匹配
+- **树莓派5 NEON 验证**: `cat /proc/cpuinfo | grep asimd` 应有输出
+
+### 成功输出
+
+```
+[YOLO] 加载模型: ../model/fp16/yolo26n.ncnn.param
+[YOLO]   类型=fp16 线程数=4 后端=CPU+NEON+OpenMP
+[YOLO] 模型加载成功。
+[YOLO]   输入尺寸: 320x320
+```
+
+### NCNN 编译 (RPi5 本地或交叉编译)
+
+```bash
+# 克隆最新版
+git clone https://github.com/Tencent/ncnn.git
+cd ncnn && mkdir -p build && cd build
+
+# RPi5 本地编译 (ARM64, CPU+NEON+OpenMP, 无 Vulkan)
+cmake -DCMAKE_BUILD_TYPE=Release \
+      -DNCNN_VULKAN=OFF \
+      -DNCNN_OPENMP=ON \
+      -DNCNN_BUILD_TOOLS=ON \
+      -DNCNN_BUILD_EXAMPLES=OFF \
+      -DNCNN_BUILD_BENCHMARK=OFF \
+      ..
+
+# x86_64 交叉编译 ARM64 (含 Vulkan)
+cmake -DCMAKE_BUILD_TYPE=Release \
+      -DNCNN_VULKAN=ON \
+      -DNCNN_BUILD_TOOLS=ON \
+      -DNCNN_BUILD_EXAMPLES=ON \
+      -DCMAKE_TOOLCHAIN_FILE=../toolchains/aarch64-linux-gnu.toolchain.cmake \
+      ..
+
+make -j4
+sudo make install && sudo ldconfig
+```
+
+> 本地编译用第一组参数 (CPU+NEON)，交叉编译用第二组 (含 Vulkan + toolchain)。项目当前仅使用 CPU 后端。
+
+---
+
+## 十二、YAML 解析注意事项
+
+> 2026-07-20 实战总结。yaml-cpp 0.8.0 的类型转换规则。
+
+### as\<bool\>() vs as\<int\>()
+
+- **`as<bool>()`** 可以从 YAML `true`/`false` 正确转换 ✅
+- **`as<int>()`** 无法从 YAML `true`/`false` 转换，抛出 `TypedBadConversion<int>` ❌
+
+### 代码规范
+
+- YAML 布尔字段统一写 `true`/`false`（可读性）
+- C++ 代码统一用 `as<bool>()` 读取（兼容性）
+- 禁止用 `as<int>()` 读取 YAML 布尔值
+
+### 已知 YAML 布尔字段
+
+| YAML 路径 | C++ 类型 | 读取方式 |
+|-----------|----------|---------|
+| `camera.auto_exposure` | `bool` | `as<bool>()` |
+| `camera.auto_white_balance` | `bool` | `as<bool>()` |
+| `video.loop` | `bool` | `as<bool>()` |
+| `roi.enabled` | `bool` | `as<bool>()` |
+| `display.enable` | `bool` | `as<bool>()` |
+| `output.save_video` | `bool` | `as<bool>()` |
+| `benchmark.enable` | `bool` | `as<bool>()` |
+| `log.use_color` | `bool` | `as<bool>()` |
 
 ---
 

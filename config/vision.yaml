@@ -33,7 +33,7 @@ video:
 # ── YOLO 检测配置 ──────────────────────────────────────────────
 yolo:
   model_dir: "../model"    # 模型根目录 (相对 build/ → 项目根)
-  model_type: "int8"      # "fp16" (高精度) | "int8" (高速度)
+  model_type: "fp16"      # "fp16" (高精度) | "int8" (高速度)
   input_width: 320
   input_height: 320
   num_classes: 2

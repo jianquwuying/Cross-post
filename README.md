@@ -51,12 +51,12 @@ YOLO26n 目标检测 + HSV 颜色识别 + UART 串口通信。
 
 ## 项目状态总览
 
-> 最后更新: 2026-07-16 | 版本: **v1.5** | 代码行数: ~4,500+ | 文件数: 30+
+> 最后更新: 2026-07-20 | 版本: **v1.6.1** | 代码行数: ~4,500+ | 文件数: 30+
 
 ### 完成度
 
 ```
-█████████████████████████████████████████████████░  92%
+████████████████████████████████████████████████████░  96%
 ```
 
 | 阶段 | 状态 | 说明 |
@@ -66,7 +66,7 @@ YOLO26n 目标检测 + HSV 颜色识别 + UART 串口通信。
 | 视频推理 | ✅ 完成 | FrameSource抽象, CameraSource/VideoSource双输入 |
 | 数据集采集 | ✅ 完成 | 独立工具, 图片+视频采集, Camera+Logger复用 |
 | 协议重构 | ✅ 完成 | 9字节0xCD/0xDC协议, DetectionFilter, PacketEncoder |
-| 环境部署 | ⚠️ 待完成 | NCNN/yaml-cpp/protobuf-dev 待安装 (需sudo) |
+| 环境部署 | ✅ 完成 | NCNN+yaml-cpp 已安装, 真实编译通过 (~5MB, ARM aarch64) |
 | 模型训练 | ⬜ 待开始 | 需 RTX4060 训练端 |
 | 硬件联调 | ⬜ 待开始 | 需摄像头+串口+目标物体 |
 
@@ -74,15 +74,18 @@ YOLO26n 目标检测 + HSV 颜色识别 + UART 串口通信。
 
 ## 可执行文件
 
-| 程序 | 用途 | 依赖 |
-|------|------|------|
-| `vision_system` | 生产部署: Camera→YOLO→Filter→HSV→PacketEncoder→UART | NCNN+YAML+OpenCV |
-| `vision_demo` | 调试演示: Camera/Video→YOLO→HSV→显示+录像+Benchmark | NCNN+YAML+OpenCV |
-| `dataset_capture` | 数据集采集: 摄像头→图片保存+视频录制 (不推理) | OpenCV+YAML+Camera+Logger |
+| 程序 | 用途 | 大小 | 动态依赖 |
+|------|------|------|---------|
+| `vision_system` | 生产部署: Camera→YOLO→Filter→HSV→PacketEncoder→UART | ~5MB | libyaml-cpp.so (NCNN 静态链接) |
+| `vision_demo` | 调试演示: Camera/Video→YOLO→HSV→显示+录像+Benchmark | ~5MB | libyaml-cpp.so (NCNN 静态链接) |
+| `dataset_capture` | 数据集采集: 摄像头→图片保存+视频录制 (不推理) | - | OpenCV+YAML+Camera+Logger |
+
+> ✅ 真实编译已通过，二进制为 ARM aarch64 格式。NCNN 以 `libncnn.a` 静态库链接，`ldd` 不显示属正常行为。
 
 ```bash
-# 编译 (根目录)
-cd build && cmake .. && make -j4
+# 编译 (根目录) — 已验证通过
+cd build && cmake -DCMAKE_BUILD_TYPE=Release .. && make -j4
+# 产物: vision_system + vision_demo (~5MB each, ARM aarch64)
 
 # 编译 (dataset_capture 独立构建)
 cd tools/dataset_capture && mkdir build && cd build && cmake .. && make -j4
@@ -139,16 +142,19 @@ Cross-post/
 
 ## 环境要求
 
-| 组件 | 版本 | 安装命令 |
-|------|------|---------|
-| GCC | 13.3.0+ | 系统自带 |
-| CMake | 3.20+ | 系统自带 |
-| OpenCV | 4.8.0 | 已安装于 `/usr/local` |
-| yaml-cpp | 0.8.0 | `sudo apt install libyaml-cpp-dev` |
-| protobuf | 3.21+ | `sudo apt install protobuf-compiler libprotobuf-dev` |
-| NCNN | latest | 从源码编译 |
+| 组件 | 版本 | 状态 |
+|------|------|------|
+| GCC | 13.3.0 | ✅ 系统自带 |
+| CMake | 3.28+ | ✅ 系统自带 |
+| OpenCV | 4.8.0 | ✅ 已安装于 `/usr/local` |
+| yaml-cpp | 0.8.0 | ✅ 已安装 (`libyaml-cpp-dev`) |
+| protobuf | 3.21+ | ⚠️ 运行时库已有, dev 头文件待安装 (`libprotobuf-dev`) |
+| NCNN | latest | ✅ 已安装 (`/usr/local/lib/libncnn.a`, ARM aarch64) |
 
-### 编译 NCNN
+### 编译 NCNN (已完成 ✅)
+
+<details>
+<summary>展开查看编译命令 (供参考)</summary>
 
 ```bash
 git clone https://github.com/Tencent/ncnn.git
@@ -162,6 +168,8 @@ cmake -DCMAKE_BUILD_TYPE=Release \
       ..
 make -j4 && sudo make install && sudo ldconfig
 ```
+
+</details>
 
 ---
 
@@ -294,6 +302,8 @@ YOLO Raw (12 targets)
 | v1.3 | 2026-07-12 | YAML合并: default+vision→单一vision.yaml |
 | v1.4 | 2026-07-13 | Dataset Capture: 图片采集+视频录制, 复用Camera+Logger |
 | v1.5 | 2026-07-16 | 协议重构: 9字节0xCD/0xDC, DetectionFilter, PacketEncoder, 7色HSV |
+| v1.6 | 2026-07-18 | 部署完成: NCNN 编译安装, yaml-cpp 安装, 真实编译通过 (ARM aarch64, ~5MB) |
+| v1.6.1 | 2026-07-20 | Bug修复: YAML bool as<int>()→as<bool>(), 模型文件名 model→yolo26n, 默认FP16 |
 
 ---
 
@@ -301,8 +311,8 @@ YOLO Raw (12 targets)
 
 | # | 任务 | 位置 | 命令/验证 |
 |---|------|------|---------|
-| 1 | 安装系统依赖 | RPi5 | `sudo apt install protobuf-compiler libprotobuf-dev libyaml-cpp-dev` |
-| 2 | 编译 NCNN | RPi5 | `ls /usr/local/lib/libncnn.a` |
+| 1 | 安装系统依赖 | RPi5 | ✅ `sudo apt install libyaml-cpp-dev` (已完成) |
+| 2 | 编译 NCNN | RPi5 | ✅ `ls /usr/local/lib/libncnn.a` (已完成, ARM aarch64) |
 | 3 | 连接+验证摄像头 | RPi5 | `v4l2-ctl --list-devices` |
 | 4 | 准备标注数据集 | 笔记本 | `data.yaml` + images/labels 齐全 |
 | 5 | 训练 YOLO26n (3类) | 笔记本 | `yolo detect train model=yolo26n.pt epochs=100 imgsz=320` |
@@ -333,9 +343,10 @@ find . -name "*.h" -o -name "*.cpp" | grep -v build | grep -v stub | sort
 
 ### 3. 需要 sudo 才能继续的事
 
-- `sudo apt install protobuf-compiler libprotobuf-dev libyaml-cpp-dev`
-- 编译安装 NCNN: `git clone ... && cd build && cmake ... && make -j4 && sudo make install`
-- 以上完成后, 真实编译运行: `cd build && cmake .. && make -j4 && ./vision_system`
+- ~~`sudo apt install libyaml-cpp-dev`~~ ✅ 已完成
+- ~~编译安装 NCNN~~ ✅ 已完成
+- ~~真实编译~~ ✅ 已完成 — `vision_system` + `vision_demo` 均已生成
+- `sudo apt install protobuf-compiler libprotobuf-dev` (NCNN 工具链, 非阻塞)
 
 ### 4. 需要物理硬件才能继续的事
 
@@ -356,6 +367,58 @@ find . -name "*.h" -o -name "*.cpp" | grep -v build | grep -v stub | sort
 | 新增目标类型 | `main.cpp` detectionThread switch分支 |
 | 新增颜色 | `color/hsv.h` Color枚举 + `color/hsv.cpp` classify() |
 | 修改过滤逻辑 | `pipeline/detection_filter.h` |
+
+---
+
+## NCNN 模型转换排障速查
+
+> 树莓派5部署 YOLO26n 实战经验。**最终使用 `ultralytics.export(format='ncnn')` 解决所有兼容问题。**
+
+### 正确导出方法 (训练端 x86_64)
+
+```bash
+pip install ultralytics[export]
+python -c "
+from ultralytics import YOLO
+model = YOLO('yolo26n.pt')
+model.export(format='ncnn', imgsz=320)
+"
+# 生成: yolo26n_ncnn_model/ → 重命名后 scp 到模型目录
+```
+
+### 排障速查表
+
+| 错误 | 根因 | 解决 |
+|------|------|------|
+| `fopen ... failed` | 文件名不匹配 | 代码硬编码 `yolo26n.ncnn.param`，确保实际文件名一致 |
+| `param is too old` | magic 版本号 > NCNN 编译版本 | `git pull origin master && make -j4 && sudo make install` |
+| `layer ReduceMax not exists` | pnnx 融合了后处理层 | **不要手改 param**，用 `model.export(format='ncnn')` 重新导出 |
+| `layer torch.topk not exists` | 同上，遗留 PyTorch 后处理 | 同上。NCNN **不支持**后处理层，必须在 C++ 应用层实现 NMS/TopK |
+| `fopen ok but 错误码=-1` | NCNN 版本 < pnnx 导出版本 | `strace` 验证 `openat` 返回 fd=4，确认为 magic 不匹配，更新 NCNN |
+
+### NCNN 编译
+
+```bash
+# RPi5 本地编译 (CPU+NEON+OpenMP, 生产环境)
+git clone https://github.com/Tencent/ncnn.git
+cd ncnn && mkdir -p build && cd build
+cmake -DCMAKE_BUILD_TYPE=Release \
+      -DNCNN_VULKAN=OFF -DNCNN_OPENMP=ON \
+      -DNCNN_BUILD_TOOLS=ON -DNCNN_BUILD_EXAMPLES=OFF ..
+
+# x86_64 交叉编译 ARM64 (含 Vulkan, 调试/测试用)
+cmake -DCMAKE_BUILD_TYPE=Release \
+      -DNCNN_VULKAN=ON -DNCNN_BUILD_TOOLS=ON -DNCNN_BUILD_EXAMPLES=ON \
+      -DCMAKE_TOOLCHAIN_FILE=../toolchains/aarch64-linux-gnu.toolchain.cmake ..
+
+make -j4 && sudo make install && sudo ldconfig
+```
+
+### 核心规则
+
+- **永远用 `model.export(format='ncnn')`**，不手动 pnnx/onnx2ncnn
+- **NCNN 不支持 TopK/NMS/ReduceMax**，后处理在 C++ 代码 (`yolo26.cpp`) 中完成
+- **保持 NCNN 版本 >= 导出工具版本**
 
 ---
 

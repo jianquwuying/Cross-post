@@ -319,7 +319,7 @@ int main(int argc, char* argv[]) {
     if (root["roi"].IsDefined()) {
         RoiConfig rc;
         auto r = root["roi"];
-        if (r["enabled"].IsDefined()) rc.enabled = (r["enabled"].as<int>() != 0);
+        if (r["enabled"].IsDefined()) rc.enabled = r["enabled"].as<bool>();
         if (r["x"].IsDefined()) rc.x = r["x"].as<int>();
         if (r["y"].IsDefined()) rc.y = r["y"].as<int>();
         if (r["width"].IsDefined())  rc.width  = r["width"].as<int>();
@@ -332,7 +332,7 @@ int main(int argc, char* argv[]) {
     std::string windowName = "YOLO26n Vision";
     if (root["display"].IsDefined()) {
         auto d = root["display"];
-        if (d["enable"].IsDefined()) displayEnable = (d["enable"].as<int>() != 0);
+        if (d["enable"].IsDefined()) displayEnable = d["enable"].as<bool>();
         if (d["window_name"].IsDefined()) windowName = d["window_name"].as<std::string>();
     }
 
@@ -341,7 +341,7 @@ int main(int argc, char* argv[]) {
     std::string outputPath = "./result.mp4";
     if (root["output"].IsDefined()) {
         auto o = root["output"];
-        if (o["save_video"].IsDefined()) saveVideo = (o["save_video"].as<int>() != 0);
+        if (o["save_video"].IsDefined()) saveVideo = o["save_video"].as<bool>();
         if (o["path"].IsDefined()) outputPath = o["path"].as<std::string>();
     }
 
@@ -349,7 +349,7 @@ int main(int argc, char* argv[]) {
     bool benchmarkEnable = true;
     if (root["benchmark"].IsDefined()) {
         auto b = root["benchmark"];
-        if (b["enable"].IsDefined()) benchmarkEnable = (b["enable"].as<int>() != 0);
+        if (b["enable"].IsDefined()) benchmarkEnable = b["enable"].as<bool>();
     }
 
     // ── 视频写入器 ────────────────────────────────────────────

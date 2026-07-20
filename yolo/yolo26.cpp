@@ -41,8 +41,8 @@ bool YOLO26Detector::load(const Config& config) {
 
     // ── 推导模型路径 ───────────────────────────────────────────
     std::string subdir = (config_.modelType == ModelType::INT8) ? "int8" : "fp16";
-    config_.paramPath = config_.modelDir + "/" + subdir + "/model.ncnn.param";
-    config_.binPath   = config_.modelDir + "/" + subdir + "/model.ncnn.bin";
+    config_.paramPath = config_.modelDir + "/" + subdir + "/yolo26n.ncnn.param";
+    config_.binPath   = config_.modelDir + "/" + subdir + "/yolo26n.ncnn.bin";
 
     // ── 配置 NCNN 选项 ─────────────────────────────────────────
     // 默认使用 CPU + NEON + OpenMP, 不启用 Vulkan
