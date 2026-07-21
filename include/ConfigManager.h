@@ -56,8 +56,9 @@ public:
     // -------------------------------------------------------------------
     // 串口
     // -------------------------------------------------------------------
-    std::string serialPort()     const;
-    int         serialBaudrate() const;
+    std::string serialPort()              const;
+    int         serialBaudrate()          const;
+    int         serialSendIntervalMs()    const;
 
     // -------------------------------------------------------------------
     // ROI 感兴趣区域

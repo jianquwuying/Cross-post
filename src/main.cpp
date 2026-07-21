@@ -136,6 +136,7 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
                         bool imshow_enable,
                         bool ui_draw_enable,
                         bool show_binary,
+                        int send_interval_ms,
                         const std::string& window_name) {
     LOG_INFO("ProcessThread 已启动");
 
@@ -145,6 +146,10 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
     int    current_mode   = 3;
     size_t queue_depth    = 0;
     bool   serial_ok      = true;  // 占位
+
+    // ---- 发送节流状态 ------------------------------------------------
+    auto last_send_time = std::chrono::steady_clock::now();
+    uint8_t last_sent_mode = 3;   // 初始化为空闲模式
 
     cv::Mat display_frame;
 
@@ -163,15 +168,32 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
             std::chrono::duration<double, std::milli>(
                 t_start - fd.capture_time).count();
 
-        // ---- 视觉处理 -------------------------------------------------
+        // ---- 视觉处理（始终全速运行，不降频）-------------------------
         auto results = pipeline.process(fd.image);
         current_mode = pipeline.currentMode();
 
-        // ---- 将结果推入发送队列 ---------------------------------------
-        if (!results.empty()) {
+        // ---- 发送节流判断 --------------------------------------------
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           now - last_send_time).count();
+        bool mode_changed = (static_cast<uint8_t>(current_mode) != last_sent_mode);
+
+        bool should_send = false;
+        if (!results.empty() && mode_changed) {
+            // 模式切换：立即抢断发送
+            should_send = true;
+        } else if (!results.empty() && elapsed >= send_interval_ms) {
+            // 间隔已到：允许发送
+            should_send = true;
+        }
+        // 无有效目标 → 不发送，不更新计时器（保证目标出现时立即发送）
+
+        if (should_send) {
             for (const auto& r : results) {
                 send_queue.push(r);
             }
+            last_send_time = now;
+            last_sent_mode = static_cast<uint8_t>(current_mode);
         }
 
         auto t_end = std::chrono::steady_clock::now();
@@ -372,10 +394,11 @@ int main(int argc, char* argv[]) {
     FPSCounter fps_camera;
     FPSCounter fps_process;
 
-    bool imshow_en = cfg.imshowEnable();
-    bool draw_en   = cfg.uiDrawEnable();
-    bool show_bin  = cfg.showBinary();
-    bool rec_mode  = cfg.recordMode();
+    bool imshow_en   = cfg.imshowEnable();
+    bool draw_en     = cfg.uiDrawEnable();
+    bool show_bin    = cfg.showBinary();
+    int  send_int_ms = cfg.serialSendIntervalMs();
+    bool rec_mode    = cfg.recordMode();
     std::string rec_dir    = cfg.recordOutputDir();
     std::string rec_fourcc = cfg.recordFourcc();
     double      rec_fps    = cfg.recordFps();
@@ -397,6 +420,7 @@ int main(int argc, char* argv[]) {
                            imshow_en,
                            draw_en,
                            show_bin,
+                           send_int_ms,
                            cfg.windowName());
 
     std::thread serial_th(serialLoop,

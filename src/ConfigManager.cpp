@@ -119,6 +119,9 @@ std::string ConfigManager::serialPort() const {
 int ConfigManager::serialBaudrate() const {
     return getRequired<int>(config_["serial"], "baudrate");
 }
+int ConfigManager::serialSendIntervalMs() const {
+    return getRequired<int>(config_["serial"], "send_interval_ms");
+}
 
 // ---------------------------------------------------------------------------
 // ROI
