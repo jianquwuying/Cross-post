@@ -22,6 +22,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -53,6 +54,10 @@ public:
     // Kalman 状态重置（公开，供 main 中模式切换使用）
     // -------------------------------------------------------------------
     void resetKalman();
+
+    /// 返回最近一次处理的二值化调试图像（供 main 中显示）。
+    /// 模式0：各颜色掩码合成图  模式1：梯度图  模式2：黑色掩码
+    cv::Mat getLastDebugImage() const;
 
 private:
     // ---- 每个目标的 Kalman 跟踪器 ------------------------------------
@@ -86,4 +91,8 @@ private:
     std::atomic<bool>     pending_kalman_reset_{false};
 
     std::unordered_map<int, KalmanTracker> kalman_trackers_;
+
+    mutable std::mutex debug_image_mutex_;
+    cv::Mat last_debug_image_;
+    void setDebugImage(const cv::Mat& img);
 };

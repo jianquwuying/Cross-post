@@ -135,6 +135,7 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
                         FPSCounter& fps_counter,
                         bool imshow_enable,
                         bool ui_draw_enable,
+                        bool show_binary,
                         const std::string& window_name) {
     LOG_INFO("ProcessThread 已启动");
 
@@ -267,6 +268,14 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
             cv::imshow(window_name, display_frame);
             cv::waitKey(1);
         }
+
+        // ---- 二值化调试窗口 ------------------------------------------
+        if (show_binary) {
+            cv::Mat debug_img = pipeline.getLastDebugImage();
+            if (!debug_img.empty()) {
+                cv::imshow("Binary Debug", debug_img);
+            }
+        }
     }
 
     LOG_INFO("ProcessThread 正在退出");
@@ -317,7 +326,8 @@ static void serialLoop(SerialPort& serial,
 // ========================================================================
 int main(int argc, char* argv[]) {
     // ---- 定位配置文件 ------------------------------------------------
-    std::string config_path = "config/vision.yaml";
+    // 从 build/ 运行时，默认使用源码树中的 config
+    std::string config_path = "../config/vision.yaml";
     if (argc >= 2) {
         config_path = argv[1];
     }
@@ -364,6 +374,7 @@ int main(int argc, char* argv[]) {
 
     bool imshow_en = cfg.imshowEnable();
     bool draw_en   = cfg.uiDrawEnable();
+    bool show_bin  = cfg.showBinary();
     bool rec_mode  = cfg.recordMode();
     std::string rec_dir    = cfg.recordOutputDir();
     std::string rec_fourcc = cfg.recordFourcc();
@@ -385,6 +396,7 @@ int main(int argc, char* argv[]) {
                            std::ref(fps_process),
                            imshow_en,
                            draw_en,
+                           show_bin,
                            cfg.windowName());
 
     std::thread serial_th(serialLoop,

@@ -80,15 +80,6 @@ target_link_libraries(visionpost
     Threads::Threads
 )
 
-# ---------------------------------------------------------------------------
-# 将 config/ 复制到构建目录，使 visionpost 能找到 vision.yaml
-# ---------------------------------------------------------------------------
-add_custom_command(TARGET visionpost POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/config
-    $<TARGET_FILE_DIR:visionpost>/config
-    COMMENT "正在将 config/ 复制到构建目录"
-)
 
 # ---------------------------------------------------------------------------
 # 安装

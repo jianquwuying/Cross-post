@@ -141,6 +141,20 @@ cv::Point2f VisionPipeline::predictAndUpdate(int key,
 }
 
 // ========================================================================
+// 调试图像存取
+// ========================================================================
+void VisionPipeline::setDebugImage(const cv::Mat& img) {
+    std::lock_guard<std::mutex> lock(debug_image_mutex_);
+    last_debug_image_ = img.clone();
+}
+
+cv::Mat VisionPipeline::getLastDebugImage() const {
+    std::lock_guard<std::mutex> lock(debug_image_mutex_);
+    if (last_debug_image_.empty()) return cv::Mat();
+    return last_debug_image_.clone();
+}
+
+// ========================================================================
 // process —— 主分发函数
 // ========================================================================
 std::vector<DetectionResult> VisionPipeline::process(const cv::Mat& frame) {
@@ -205,6 +219,18 @@ std::vector<DetectionResult> VisionPipeline::processMode0(
 
     double min_area = static_cast<double>(cfg.mode0MinContourArea());
 
+    // 二值化调试图像（各颜色掩码合成）
+    cv::Mat combined_debug(roi.size(), CV_8UC3, cv::Scalar(0, 0, 0));
+    // 各颜色对应的 BGR 色彩（用于渲染合成图）
+    const cv::Scalar kDebugColors[] = {
+        cv::Scalar(0, 0, 255),    // 红
+        cv::Scalar(0, 255, 255),  // 黄
+        cv::Scalar(255, 0, 0),    // 蓝
+        cv::Scalar(0, 255, 0),    // 绿
+        cv::Scalar(128, 128, 128),// 黑（灰色）
+        cv::Scalar(255, 255, 0),  // 青
+    };
+
     // ---- 逐色处理 ----------------------------------------------------
     for (int c = 0; c < kNumColors; ++c) {
         const char* color_name = kColorNames[c];
@@ -222,6 +248,9 @@ std::vector<DetectionResult> VisionPipeline::processMode0(
         // 形态学开运算（去噪）
         cv::morphologyEx(color_mask, color_mask,
                          cv::MORPH_OPEN, morph_kernel);
+
+        // 叠加到二值化调试图像
+        combined_debug.setTo(kDebugColors[c], color_mask);
 
         // 查找轮廓
         std::vector<std::vector<cv::Point>> contours;
@@ -273,13 +302,14 @@ std::vector<DetectionResult> VisionPipeline::processMode0(
                               static_cast<float>(frame.rows - 1)));
 
         DetectionResult dr;
-        dr.target_type = 0;
+        dr.target_type = 1;   // 1 = 颜色物块
         dr.color_id    = static_cast<uint8_t>(c);
         dr.x           = static_cast<uint16_t>(filtered.x);
         dr.y           = static_cast<uint16_t>(filtered.y);
         results.push_back(dr);
     }
 
+    setDebugImage(combined_debug);
     return results;
 }
 
@@ -331,6 +361,8 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
     cv::Mat blurred;
     cv::GaussianBlur(grad, blurred, cv::Size(gks, gks), 0);
 
+    setDebugImage(blurred);
+
     // ---- Hough 圆检测 ------------------------------------------------
     std::vector<cv::Vec3f> circles;
     cv::HoughCircles(blurred, circles, cv::HOUGH_GRADIENT,
@@ -374,7 +406,7 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
                               static_cast<float>(frame.rows - 1)));
 
         DetectionResult dr;
-        dr.target_type = 1;
+        dr.target_type = 2;   // 2 = 圆环
         dr.color_id    = static_cast<uint8_t>(key);
         dr.x           = static_cast<uint16_t>(filtered.x);
         dr.y           = static_cast<uint16_t>(filtered.y);
@@ -421,6 +453,8 @@ std::vector<DetectionResult> VisionPipeline::processMode2(
         cv::MORPH_RECT, cv::Size(mks, mks));
     cv::morphologyEx(black_mask, black_mask,
                      cv::MORPH_CLOSE, morph_kernel);
+
+    setDebugImage(black_mask);
 
     // ---- 查找轮廓 ----------------------------------------------------
     std::vector<std::vector<cv::Point>> contours;
@@ -475,7 +509,7 @@ std::vector<DetectionResult> VisionPipeline::processMode2(
                           static_cast<float>(frame.rows - 1)));
 
     DetectionResult dr;
-    dr.target_type = 2;
+    dr.target_type = 3;   // 3 = 黑色圆柱
     dr.color_id    = 0;
     dr.x           = static_cast<uint16_t>(filtered.x);
     dr.y           = static_cast<uint16_t>(filtered.y);

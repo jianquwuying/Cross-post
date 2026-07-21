@@ -87,6 +87,9 @@ bool ConfigManager::imshowEnable() const {
 bool ConfigManager::uiDrawEnable() const {
     return getRequired<bool>(config_["ui"], "ui_draw_enable");
 }
+bool ConfigManager::showBinary() const {
+    return getRequired<bool>(config_["ui"], "show_binary");
+}
 std::string ConfigManager::windowName() const {
     return getRequired<std::string>(config_["ui"], "window_name");
 }

@@ -42,6 +42,7 @@ public:
     // -------------------------------------------------------------------
     bool        imshowEnable()  const;
     bool        uiDrawEnable()  const;
+    bool        showBinary()    const;
     std::string windowName()    const;
 
     // -------------------------------------------------------------------
