@@ -1,0 +1,7 @@
+/home/shu/Cross-post/RaspberryPi5_Vision_System/build/CMakeFiles/visionpost.dir
+/home/shu/Cross-post/RaspberryPi5_Vision_System/build/CMakeFiles/edit_cache.dir
+/home/shu/Cross-post/RaspberryPi5_Vision_System/build/CMakeFiles/rebuild_cache.dir
+/home/shu/Cross-post/RaspberryPi5_Vision_System/build/CMakeFiles/list_install_components.dir
+/home/shu/Cross-post/RaspberryPi5_Vision_System/build/CMakeFiles/install.dir
+/home/shu/Cross-post/RaspberryPi5_Vision_System/build/CMakeFiles/install/local.dir
+/home/shu/Cross-post/RaspberryPi5_Vision_System/build/CMakeFiles/install/strip.dir
