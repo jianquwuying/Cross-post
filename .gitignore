@@ -18,6 +18,7 @@ Makefile
 *~
 
 # 模型文件（大型二进制文件 — 单独存储）
+model/
 model/*.bin
 model/*.param
 model/*.pt
