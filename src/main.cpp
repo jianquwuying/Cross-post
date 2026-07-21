@@ -207,9 +207,9 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
                     if (r.target_type == 0) {
                         label = std::string(kColorNames[r.color_id]);
                     } else if (r.target_type == 1) {
-                        label = "圆环" + std::to_string(r.color_id);
+                        label = "Circle" + std::to_string(r.color_id);
                     } else {
-                        label = "圆柱";
+                        label = "Cylinder";
                     }
                     cv::putText(display_frame, label,
                                 cv::Point(r.x + 12, r.y - 5),
@@ -232,33 +232,33 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
                 char buf[128];
 
                 std::snprintf(buf, sizeof(buf),
-                              "摄像头 FPS: %.1f", camera_fps);
+                              "Cam FPS: %.1f", camera_fps);
                 putStat(buf, cv::Scalar(0, 255, 0));
 
                 std::snprintf(buf, sizeof(buf),
-                              "处理 FPS: %.1f", process_fps);
+                              "Process FPS: %.1f", process_fps);
                 putStat(buf, cv::Scalar(0, 255, 0));
 
                 std::snprintf(buf, sizeof(buf),
-                              "延迟: %.1f ms", latency_ms);
+                              "Latency: %.1f ms", latency_ms);
                 putStat(buf, cv::Scalar(0, 255, 255));
 
                 const char* mode_names[] = {
-                    "模式0（颜色物块）",
-                    "模式1（圆环检测）",
-                    "模式2（黑色圆柱）",
-                    "模式3（空闲）"
+                    "Mode0 (Color Block)",
+                    "Mode1 (Circle Ring)",
+                    "Mode2 (Black Cylinder)",
+                    "Mode3 (Idle)"
                 };
                 std::snprintf(buf, sizeof(buf),
-                              "模式: %s", mode_names[current_mode]);
+                              "Mode: %s", mode_names[current_mode]);
                 putStat(buf, cv::Scalar(255, 255, 0));
 
                 std::snprintf(buf, sizeof(buf),
-                              "队列: %zu", queue_depth);
+                              "Queue: %zu", queue_depth);
                 putStat(buf, cv::Scalar(200, 200, 200));
 
                 std::snprintf(buf, sizeof(buf),
-                              "串口: %s", serial_ok ? "正常" : "错误");
+                              "Serial: %s", serial_ok ? "OK" : "ERR");
                 putStat(buf, serial_ok
                         ? cv::Scalar(0, 255, 0)
                         : cv::Scalar(0, 0, 255));
