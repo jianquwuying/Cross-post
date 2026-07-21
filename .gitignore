@@ -1,0 +1,44 @@
+# 构建目录
+build/
+
+# IDE 与编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 编译产物
+*.o
+*.obj
+*.exe
+*.out
+*.a
+*.so
+*.dylib
+
+# CMake 临时文件
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+
+# 录制视频输出
+recordings/
+*.avi
+*.mp4
+*.mkv
+
+# 日志文件
+*.log
+vision.log
+
+# 核心转储
+core
+core.*
+
+# 临时文件
+tmp/
+temp/
+*.tmp
