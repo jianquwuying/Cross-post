@@ -363,6 +363,13 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
                           cv::THRESH_BINARY_INV,
                           block_size, adaptive_c);
 
+    // ---- 形态学开运算：抹掉顶部/边缘细微白点和破碎线条 ---------------
+    int open_ksize = cfg.mode1MorphOpenKernelSize();
+    if (open_ksize % 2 == 0) open_ksize++;
+    cv::Mat open_kernel = cv::getStructuringElement(
+        cv::MORPH_ELLIPSE, cv::Size(open_ksize, open_ksize));
+    cv::morphologyEx(binary, binary, cv::MORPH_OPEN, open_kernel);
+
     setDebugImage(binary);
 
     // ---- 提取最外层轮廓（RETR_EXTERNAL 忽略内部数字和内圈）----------
@@ -429,17 +436,32 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
     // 三重几何校验
     // ================================================================
 
-    // ---- 第一道锁：共线性校验（Y 轴容差）---------------------------
+    // ---- 第一道锁：共线性校验（cv::fitLine 最小二乘拟合）----------
     if (cfg.mode1EnableCollinearityCheck()) {
-        float min_y = candidates[0].cy;
-        float max_y = candidates[0].cy;
+        // 收集 3 个圆心坐标
+        std::vector<cv::Point2f> centers;
         for (const auto& cc : candidates) {
-            if (cc.cy < min_y) min_y = cc.cy;
-            if (cc.cy > max_y) max_y = cc.cy;
+            centers.emplace_back(cc.cx, cc.cy);
         }
-        float diff_y = max_y - min_y;
-        if (diff_y > cfg.mode1CollinearityTolerancePx()) {
-            // 三个圆心不共线 → 丢弃整帧
+
+        // 最小二乘直线拟合
+        cv::Vec4f line;
+        cv::fitLine(centers, line, cv::DIST_L2, 0, 0.01, 0.01);
+        // line: (vx, vy, x0, y0) —— 方向向量已归一化
+
+        // 计算每个点到拟合直线的垂直距离
+        float max_deviation = 0.0f;
+        for (const auto& p : centers) {
+            // 点到直线的垂直距离 = |(p - p0) × v| / |v|
+            // 因为 |v| = 1，简化为 |cross(p - p0, v)|
+            float dx = p.x - line[2];
+            float dy = p.y - line[3];
+            float dist = std::abs(dx * line[1] - dy * line[0]);
+            if (dist > max_deviation) max_deviation = dist;
+        }
+
+        if (max_deviation > cfg.mode1CollinearityTolerancePx()) {
+            // 三个圆心偏离直线过大 → 丢弃整帧
             return results;
         }
     }

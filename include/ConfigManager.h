@@ -97,6 +97,7 @@ public:
     int mode1AdaptiveBlockSize()   const;
     int mode1AdaptiveC()           const;
     int mode1MinContourArea()      const;
+    int mode1MorphOpenKernelSize() const;
 
     // 几何校验
     bool   mode1EnableCollinearityCheck() const;

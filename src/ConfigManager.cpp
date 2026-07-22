@@ -209,6 +209,9 @@ int ConfigManager::mode1AdaptiveC() const {
 int ConfigManager::mode1MinContourArea() const {
     return getRequired<int>(config_["mode1"], "min_contour_area");
 }
+int ConfigManager::mode1MorphOpenKernelSize() const {
+    return getRequired<int>(config_["mode1"], "morph_open_kernel_size");
+}
 
 bool ConfigManager::mode1EnableCollinearityCheck() const {
     return getRequired<bool>(config_["mode1"]["geometry_filter"],

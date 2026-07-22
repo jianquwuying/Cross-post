@@ -227,9 +227,9 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
                     cv::circle(display_frame, pt, 10, color, 1);
 
                     std::string label;
-                    if (r.target_type == 0) {
+                    if (r.target_type == 1) {
                         label = std::string(kColorNames[r.color_id]);
-                    } else if (r.target_type == 1) {
+                    } else if (r.target_type == 2) {
                         label = "Circle" + std::to_string(r.color_id);
                     } else {
                         label = "Cylinder";
@@ -367,6 +367,9 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
+    // ---- 1.5 初始化日志文件（在配置加载之后）----------------------------
+    Logger::instance().init(cfg.logToFile(), cfg.logFilePath());
+
     // ---- 2. 打开摄像头 ------------------------------------------------
     CameraCapture camera;
     if (!camera.open()) {
@@ -443,5 +446,6 @@ int main(int argc, char* argv[]) {
     cv::destroyAllWindows();
 
     LOG_INFO("视觉系统已干净关闭。");
+    Logger::instance().shutdown();
     return EXIT_SUCCESS;
 }

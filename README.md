@@ -1,32 +1,32 @@
 # RaspberryPi5 视觉系统
 
-基于 Raspberry Pi 5 的嵌入式实时视觉系统。
+基于 Raspberry Pi 5 的嵌入式实时视觉系统，用于竞赛环境下的目标检测与跟踪。
 
 **可执行程序：** `visionpost`
 
 ---
 
-## 硬件需求
+## 硬件环境
 
-| 组件       | 规格                                    |
-|------------|----------------------------------------|
-| 主控       | Raspberry Pi 5 Model B（ARM Cortex-A76 ×4） |
-| 系统       | Ubuntu 24.04.4 LTS（aarch64）           |
-| 摄像头     | USB UVC，MJPG 640×480 @ 60 FPS         |
-| 串口       | `/dev/ttyUSB0`（可配置）               |
+| 组件   | 规格                                         |
+|--------|----------------------------------------------|
+| 主控   | Raspberry Pi 5 Model B（ARM Cortex-A76 ×4）  |
+| 系统   | Ubuntu 24.04.4 LTS（aarch64）                |
+| 摄像头 | USB UVC，MJPG 640×480 @ 60 FPS               |
+| 串口   | `/dev/ttyUSB0`（YAML 可配置）                 |
 
 ---
 
 ## 软件依赖
 
-| 依赖        | 版本   |
-|-------------|--------|
-| GCC         | 13.3+  |
-| CMake       | 3.28+  |
-| OpenCV      | 4.8+   |
-| yaml-cpp    | 0.8+   |
+| 依赖      | 版本   | 用途                          |
+|-----------|--------|-------------------------------|
+| GCC       | 13.3+  | C++17 编译，ARM NEON 自动向量化 |
+| CMake     | 3.28+  | 构建系统                       |
+| OpenCV    | 4.8+   | 传统视觉算法（无深度学习）       |
+| yaml-cpp  | 0.8+   | YAML 配置文件解析               |
 
-Ubuntu 安装命令：
+安装命令：
 
 ```bash
 sudo apt install build-essential cmake libopencv-dev libyaml-cpp-dev
@@ -34,207 +34,256 @@ sudo apt install build-essential cmake libopencv-dev libyaml-cpp-dev
 
 ---
 
-## 编译
+## 编译与运行
 
 ```bash
+# 编译（Release 模式，O3 优化）
 mkdir -p build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j4
+
+# 运行（默认读取 ../config/vision.yaml）
+./visionpost
+
+# 自定义配置
+./visionpost /path/to/custom.yaml
+
+# 脚本启动（自动设置串口权限）
+../scripts/start.sh
+../scripts/stop.sh
+../scripts/restart.sh
 ```
 
-可执行文件 `visionpost` 生成在 `build/` 目录下。
-配置文件始终读取源码树中的 `config/vision.yaml`（不复制到 build）。
-
----
-
-## 运行
-
-```bash
-# 默认配置（build/ 下运行时自动读取 ../config/vision.yaml）：
-./build/visionpost
-
-# 自定义配置文件：
-./build/visionpost /path/to/custom.yaml
-
-# 使用便捷脚本：
-./scripts/start.sh
-```
-
-按 `Ctrl+C`（SIGINT）停止，或使用：
-
-```bash
-./scripts/stop.sh
-```
-
----
-
-## 配置文件（`config/vision.yaml`）
-
-所有参数均来自 YAML 文件。**代码中没有任何硬编码默认值** ——
-缺少必需的键时程序会立即退出并打印错误信息。
-
-### 主要配置节
-
-| 配置节       | 说明                                                   |
-|-------------|--------------------------------------------------------|
-| `camera`    | 设备索引、视频文件回退、分辨率、帧率                       |
-| `ui`        | 窗口开关、叠加层开关、窗口标题、`show_binary` 二值化调试窗 |
-| `serial`    | 串口路径、波特率、`send_interval_ms` 发送间隔            |
-| `kalman`    | 过程/测量噪声、初始化帧数、超时帧数                        |
-| `recording` | 原始视频录制（无叠加层）                                  |
-| `roi`       | 感兴趣区域（x, y, w, h）                                |
-| `mode0`     | 6 色 HSV 范围（红色有双区间）                            |
-| `mode1`     | 轮廓法圆环检测：自适应阈值 + findContours + 三重几何校验   |
-| `mode2`     | 黑色 HSV 范围、长宽比/面积阈值                           |
-| `logging`   | 日志级别、文件输出                                       |
-
-### 视频文件测试
-
-将 `camera.video_path` 设置为 `.mp4` 文件路径即可用视频代替摄像头：
-
-```yaml
-camera:
-  video_path: "/path/to/test.mp4"
-```
-
----
-
-## 视觉模式
-
-由远端系统通过串口命令控制：
-
-| 命令     | 模式  | 说明                                   |
-|----------|------|----------------------------------------|
-| `MODE0`  | 0    | 6 颜色物块检测 + Kalman                 |
-| `MODE1`  | 1    | 圆环检测（轮廓法）                       |
-| `MODE2`  | 2    | 黑色圆柱检测                            |
-| `MODE3`  | 3    | 空闲（仅采集，不检测）                    |
-
-### 模式0 —— 颜色物块
-
-检测 6 种颜色：**红、黄、蓝、绿、黑、青**。
-
-- 红色使用双 HSV 区间：H 0–10 ∪ H 170–180
-- 每种颜色独立跟踪，各有独立的 Kalman 滤波器
-- Kalman：2-D `[x, y]`，恒等转移矩阵，**无速度模型**
-- 二值化调试窗：各颜色掩码合成图（各颜色以对应 BGR 色彩渲染）
-
-### 模式1 —— 圆环检测（轮廓法 + 三重几何校验）
-
-- 灰度化 → 高斯模糊 → 自适应阈值二值化 → `findContours(RETR_EXTERNAL)`
-- `RETR_EXTERNAL` 只取最外层轮廓，自动忽略内部数字"1、2、3"和内圈
-- 按面积取前 3 大轮廓，`moments` 质心 + `minEnclosingCircle` 半径
-- **三重校验（YAML 可独立开关）：**
-  1. 数量校验：有效轮廓 ≥ 3
-  2. 共线性校验：`max_y − min_y ≤ collinearity_tolerance_px`
-  3. 半径一致性校验：`max_r − min_r ≤ radius_tolerance_px`
-- **任意校验失败 → 丢弃整帧**（不更新 Kalman、不发送）
-- 通过后按 X 坐标排序：左 = 1，中 = 2，右 = 3
-- 性能远超 HoughCircles（树莓派5 可达 50+ FPS）
-- 二值化调试窗：自适应阈值二值图
-
-### 模式2 —— 黑色圆柱
-
-- 黑色 HSV 掩码 → 形态学闭运算 → 轮廓 → `minAreaRect`
-- 过滤条件：`长宽比 > 阈值` **且** `面积 > 阈值`
-- 二值化调试窗：形态学处理后的黑色掩码
-
-### 模式3 —— 空闲
-
-摄像头继续采集，但不执行检测、不发送数据。
-
----
-
-## 发送节流机制
-
-视觉算法（含 Kalman）始终 60fps 全速运行。串口推送受 `serial.send_interval_ms` 控制：
-
-- **限频发送**：距上次发送时间 < `send_interval_ms` 时跳过，等待下一帧
-- **模式切换抢占**：模式变化时无视计时器，立即发送当前帧结果
-- **目标出现优先**：无有效目标时不更新计时器，目标重新出现后第一帧立即发出
-- **连续多包间隔**：同一帧内连续发送多个包之间插入 100µs 保护间隙，防止粘包
-
----
-
-## 串口协议
-
-### 接收（4 字节）—— 模式命令
-
-```
-0xCD  0x01  MODE  0xDC
-```
-
-`MODE` 为一个字节：`0x00` – `0x03`。
-
-### 发送（9 字节）—— 检测结果
-
-```
-0xCD  0x06  TargetType  Color  X_H  X_L  Y_H  Y_L  0xDC
-```
-
-| 字节 | 字段         | 说明                                                |
-|------|-------------|-----------------------------------------------------|
-| 0    | `0xCD`      | 帧头                                                |
-| 1    | `0x06`      | 数据帧标记                                           |
-| 2    | `TargetType`| 1 = 颜色物块，2 = 圆环，3 = 圆柱                     |
-| 3    | `Color`     | 模式0：颜色索引（0=红,1=黄,2=蓝,3=绿,4=黑,5=青）<br>模式1：圆编号（1–3）<br>模式2：未使用 |
-| 4–5  | `X`         | uint16_t，大端序                                     |
-| 6–7  | `Y`         | uint16_t，大端序                                     |
-| 8    | `0xDC`      | 帧尾                                                |
+按 `Ctrl+C` 发送 SIGINT 优雅退出。
 
 ---
 
 ## 系统架构
 
 ```
-CameraThread ──(单槽缓冲)──> ProcessThread ──(发送队列)──> SerialThread
+CameraThread ──(单槽帧缓冲)──> ProcessThread ──(发送队列)──> SerialThread
       │                         │    │                          │
       └── 录制原始视频          │    └── 限频门控               /dev/ttyUSB0
                               模式命令（atomic）──────────────────┘
 ```
 
-- **CameraThread：**采集帧，仅保留最新帧，录制原始视频（无 UI 叠加）
-- **ProcessThread：**全速运行视觉管线 + Kalman，经限频门控推入发送队列，绘制 UI
-- **SerialThread：**接收模式命令，排空发送队列并写入 UART（非阻塞 poll，包间 100µs 间隔）
+### 三线程模型
 
-### 安全保证
+| 线程            | 职责                                                              |
+|-----------------|-------------------------------------------------------------------|
+| **CameraThread** | 采集帧 → 单槽缓冲（仅保留最新帧，丢弃旧帧）→ 录制原始视频（无 UI） |
+| **ProcessThread**| 获取最新帧 → 视觉算法 + Kalman（全速 60fps）→ 限频门控 → 推入发送队列 → 绘制 UI |
+| **SerialThread** | poll 接收模式命令 → 排空发送队列 → 非阻塞写入 UART（包间 100µs 间隔） |
 
-- 仅 SerialThread 接触 UART 文件描述符
-- ProcessThread **绝不**直接调用 `SerialPort::write()` —— 结果通过 `ThreadSafeSendQueue` 流转
-- 每次模式切换时 Kalman 滤波器全部重置
-- 摄像头故障触发最多 5 次重连，之后程序退出
-- 串口发送 DEBUG 模式可输出完整 HEX 包日志
+### 线程安全约束
+
+| 资源           | 生产者          | 消费者          | 机制                                    |
+|----------------|-----------------|-----------------|-----------------------------------------|
+| 帧缓冲         | CameraThread    | ProcessThread   | `std::mutex` 单槽覆盖                    |
+| 发送队列       | ProcessThread   | SerialThread    | `std::mutex` + `std::condition_variable` |
+| 当前模式       | SerialThread    | ProcessThread   | `std::atomic<uint8_t>`                  |
+| Kalman 映射表  | ProcessThread   | ProcessThread   | 单线程访问（模式切换延迟处理）             |
+| UART fd        | SerialThread 独享 | —             | ProcessThread **严禁**直接写串口         |
+| 调试图像       | ProcessThread   | ProcessThread   | `std::mutex`                            |
+
+---
+
+## 视觉模式
+
+远端主控通过串口发送 `MODE0`–`MODE3` 命令切换。模式切换时 Kalman 滤波器全部重置。
+
+### 模式0 — 颜色物块检测
+
+检测 6 种颜色：**红、黄、蓝、绿、黑、青**。
+
+- 流水线：ROI → BGR→HSV → 逐色 `inRange` → 形态学开运算 → 轮廓 → 取最大面积 → `moments` 质心 → Kalman
+- 红色使用双 HSV 区间：`H 0–10 ∪ H 170–180`（`bitwise_or` 合并）
+- 每种颜色独立跟踪，各自持有独立的 Kalman 滤波器
+- 某颜色检测失败不影响其他颜色
+- 二值化调试窗：6 色掩码合成图（各色以 BGR 色彩渲染于黑底）
+
+### 模式1 — 圆环检测（轮廓法 + 三重几何校验）
+
+替代传统 HoughCircles，使用轮廓法检测，树莓派5 可达 50+ FPS。
+
+- 流水线：ROI → 灰度化 → 高斯模糊 → 自适应阈值 → 形态学开运算 → `findContours(RETR_EXTERNAL)` → 取前 3 大面积 → `moments` 质心 + `minEnclosingCircle` 半径
+- `RETR_EXTERNAL` 只取最外层轮廓，自动忽略内部数字"1、2、3"和内圈
+
+**三重几何校验（YAML `geometry_filter` 可独立开关）：**
+
+| 锁   | 校验项       | 方法                                                      | 失败处理   |
+|------|-------------|-----------------------------------------------------------|-----------|
+| 1    | 数量         | 有效轮廓 ≥ 3                                               | 丢弃整帧    |
+| 2    | 共线性       | `cv::fitLine(cv::DIST_L2)` 最小二乘拟合，圆心垂直距离 ≤ 阈值 | 丢弃整帧    |
+| 3    | 半径一致性   | `max_r − min_r ≤ radius_tolerance_px`                      | 丢弃整帧    |
+
+- 任意校验失败 → `return {}`，不更新 Kalman，不发送
+- 通过后按 X 坐标排序：左=1、中=2、右=3
+- 二值化调试窗：形态学开运算后的二值图
+
+### 模式2 — 黑色圆柱检测
+
+- 流水线：ROI → BGR→HSV → 黑色 `inRange` → 形态学闭运算 → 轮廓 → `minAreaRect`
+- 过滤条件：`长宽比 > aspect_ratio_threshold` **且** `面积 > min_area`
+- 取最大有效候选 → Kalman 滤波
+- 二值化调试窗：形态学处理后的黑色掩码
+
+### 模式3 — 空闲
+
+继续采集，不检测，不发送。
+
+---
+
+## 发送节流机制
+
+视觉算法始终 60fps 全速运行，串口推送受 YAML 控制：
+
+| 触发条件                       | 行为                                    |
+|-------------------------------|-----------------------------------------|
+| 模式切换（`current_mode` 变化）| **立即抢断发送**，重置计时器               |
+| 距上次发送 ≥ `send_interval_ms`| 允许发送                                |
+| 无有效目标                     | 不发送，**不更新计时器**（目标重现立即发出）  |
+| 同一帧连续多包                  | 包间 `sleep(100µs)` 防粘包               |
+
+---
+
+## Kalman 滤波器
+
+- **状态：** 2-D `[x, y]`，**无速度模型**
+- **转移矩阵：** `I₂`（恒等）
+- **测量矩阵：** `I₂`（恒等）
+- **噪声转换：** YAML 标量 → `eye(2,2) * scalar`
+
+```cpp
+kf.processNoiseCov      = cv::Mat::eye(2, 2, CV_32F) * yaml_scalar;
+kf.measurementNoiseCov  = cv::Mat::eye(2, 2, CV_32F) * yaml_scalar;
+```
+
+- 初始化需连续 N 帧稳定检测（`kalman.init_frames`）
+- 连续丢失 M 帧后超时复位：`statePost = statePre`（防漂移）
+- 模式切换 → 全量清空重建
+
+---
+
+## 串口协议
+
+### 接收 — 模式命令（4 字节）
+
+```
+0xCD  0x01  MODE(0-3)  0xDC
+```
+
+### 发送 — 检测结果（9 字节）
+
+```
+0xCD  0x06  TargetType  Color  X_H  X_L  Y_H  Y_L  0xDC
+```
+
+| 字节 | 字段         | 值                                                        |
+|------|-------------|-----------------------------------------------------------|
+| 0    | `0xCD`      | 帧头                                                       |
+| 1    | `0x06`      | 数据类型                                                   |
+| 2    | TargetType  | 1=颜色物块  2=圆环  3=圆柱                                  |
+| 3    | Color       | 模式0：颜色索引(0=红,1=黄,2=蓝,3=绿,4=黑,5=青)；模式1：圆编号(1-3) |
+| 4-5  | X           | `uint16_t` 大端序                                          |
+| 6-7  | Y           | `uint16_t` 大端序                                          |
+| 8    | `0xDC`      | 帧尾                                                       |
+
+- 接收端帧同步解析：搜寻 `0xCD` 后读固定长度，无效自动跳过
+- Debug 模式输出完整 HEX 日志
+
+---
+
+## 配置文件（`config/vision.yaml`）
+
+**所有参数来自 YAML，无硬编码默认值。缺少键 → `LOG_ERROR` + `exit(EXIT_FAILURE)`。**
+
+### 配置节总览
+
+| 配置节       | 关键参数                                                     |
+|-------------|-------------------------------------------------------------|
+| `camera`    | `index`, `video_path`, `width`, `height`, `fps`             |
+| `ui`        | `imshow_enable`, `ui_draw_enable`, `show_binary`, `window_name` |
+| `serial`    | `port`, `baudrate`, `send_interval_ms`                      |
+| `kalman`    | `process_noise_cov`, `measurement_noise_cov`, `init_frames`, `lost_frame_limit` |
+| `recording` | `record_mode`, `output_dir`, `fourcc`, `fps`                 |
+| `roi`       | `x`, `y`, `width`, `height`                                  |
+| `mode0`     | `min_contour_area`, `morph_kernel_size`, 6 色 HSV 双区间      |
+| `mode1`     | `gaussian_kernel_size`, `adaptive_block_size`, `adaptive_c`, `min_contour_area`, `morph_open_kernel_size`, `geometry_filter` |
+| `mode2`     | HSV 黑色阈值, `aspect_ratio_threshold`, `min_area`, `morph_kernel_size` |
+| `logging`   | `level`, `log_to_file`, `log_file_path`                       |
+
+### 视频测试
+
+```yaml
+camera:
+  video_path: "/path/to/test.mp4"   # 非空时优先使用视频文件
+```
+
+---
+
+## 日志系统
+
+双通道输出，单例模式，线程安全：
+
+- **控制台：** ANSI 彩色（INFO=绿 WARN=黄 ERROR=红 DEBUG=蓝）
+- **文件：** 纯文本（无颜色码），`std::flush` 立即落盘防崩溃丢失
+- Debug 日志仅在 `-DCMAKE_BUILD_TYPE=Debug` 时编译
+- 启用：`log_to_file: true` + `log_file_path: "../vision.log"`
+
+---
+
+## 调试功能
+
+| 功能           | YAML 控制              | 说明                                         |
+|---------------|------------------------|----------------------------------------------|
+| 主窗口         | `ui.imshow_enable`     | OpenCV 窗口，含 FPS/延迟/模式/队列/串口状态     |
+| 叠加层         | `ui.ui_draw_enable`    | 目标位置圆圈+标签、ROI 矩形框                   |
+| 二值化调试窗   | `ui.show_binary`       | 模式0: 彩色掩码合成  模式1: 二值图  模式2: 黑色掩码 |
+| 串口 HEX 日志  | `-DCMAKE_BUILD_TYPE=Debug` | 每包 9 字节完整打印                          |
+
+---
+
+## 异常处理
+
+| 场景           | 策略                                      |
+|---------------|-------------------------------------------|
+| 摄像头断连     | release → sleep 1s → reopen，最多 5 次，超限退出 |
+| 串口发送失败   | `LOG_WARN` 提示，继续运行                   |
+| 空帧           | 返回 `nullopt`，调用方 sleep 1ms 后重试      |
+| 配置键缺失     | 立即 `exit(EXIT_FAILURE)` 并打印错误键名      |
+| 模式1 校验失败 | 丢弃整帧，不更新 Kalman，不发送              |
 
 ---
 
 ## 目录结构
 
 ```
-├── CMakeLists.txt              # CMake 构建配置
+├── CMakeLists.txt              # CMake 构建（C++17, ARM NEON, OpenCV 6 模块）
 ├── README.md                   # 本文件
 ├── .gitignore
-├── 核心记忆.md                 # 项目记忆文件
+├── 核心记忆.md                 # AI 对话快速恢复项目记忆
 ├── config/
-│   └── vision.yaml             # 视觉系统配置文件
+│   └── vision.yaml             # 唯一配置来源
 ├── include/
-│   ├── ConfigManager.h         # YAML 配置管理（单例）
-│   ├── CameraCapture.h         # USB 摄像头封装
-│   ├── SerialPort.h            # 串口通信（非阻塞）
-│   └── VisionPipeline.h        # 视觉管线 + Kalman 滤波器
+│   ├── ConfigManager.h         # YAML 配置单例（模板 getRequired 安全读取）
+│   ├── CameraCapture.h         # V4L2 摄像头封装（5 次重试）
+│   ├── SerialPort.h            # 非阻塞 UART（termios 8N1 + poll/select）
+│   └── VisionPipeline.h        # 4 模式视觉调度 + Kalman 管理 + 调试图像
 ├── src/
-│   ├── main.cpp                # 程序入口 + 线程编排 + 限频门控
-│   ├── ConfigManager.cpp
-│   ├── CameraCapture.cpp
-│   ├── SerialPort.cpp          # 含 HEX 调试日志
-│   └── VisionPipeline.cpp      # 模式0（HSV+轮廓）模式1（轮廓法）模式2（minAreaRect）
+│   ├── main.cpp                # 入口 + 三线程编排 + 限频门控 + UI 绘制
+│   ├── ConfigManager.cpp       # 42 个 YAML 访问器
+│   ├── CameraCapture.cpp       # 异常安全读帧 + 断连重连
+│   ├── SerialPort.cpp          # 帧同步解析 + HEX 日志 + 波特率自适应
+│   └── VisionPipeline.cpp      # 模式0(HSV+轮廓) 模式1(轮廓法+三重校验) 模式2(minAreaRect) + Kalman
 ├── tools/
-│   ├── Logger.h                # 彩色日志宏
-│   ├── FPSCounter.h            # 帧率计数器
-│   ├── ThreadSafeFrameBuffer.h # 线程安全单槽帧缓冲
-│   ├── ThreadSafeSendQueue.h   # 线程安全发送队列 + DetectionResult
-│   └── ColorOrder.h            # 颜色定义与顺序
+│   ├── Logger.h                # 双通道日志单例（控制台彩色 + 文件纯文本 flush）
+│   ├── FPSCounter.h            # 1 秒滑动窗帧率计算
+│   ├── ThreadSafeFrameBuffer.h # 模板单槽帧缓冲（覆盖旧帧）
+│   ├── ThreadSafeSendQueue.h   # 生产者-消费者队列 + DetectionResult 定义
+│   └── ColorOrder.h            # 6 色枚举 + 名称数组
 └── scripts/
-    ├── start.sh
-    ├── stop.sh
-    └── restart.sh
+    ├── start.sh                # chmod 串口权限 + 启动 visionpost
+    ├── stop.sh                 # SIGINT 优雅关闭（5 秒超时→强制 kill）
+    └── restart.sh              # stop + start
 ```
