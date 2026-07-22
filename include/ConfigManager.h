@@ -91,18 +91,18 @@ public:
     int mode0MorphKernelSize()  const;
 
     // -------------------------------------------------------------------
-    // 模式1  —  圆环检测
+    // 模式1  —  圆环检测（轮廓法）
     // -------------------------------------------------------------------
-    double mode1ClaheClipLimit()     const;
-    int    mode1ClaheTileSize()      const;
-    int    mode1MorphKernelSize()    const;
-    int    mode1GaussianKernelSize() const;
-    double mode1HoughDp()            const;
-    double mode1HoughMinDist()       const;
-    double mode1HoughParam1()        const;
-    double mode1HoughParam2()        const;
-    int    mode1HoughMinRadius()     const;
-    int    mode1HoughMaxRadius()     const;
+    int mode1GaussianKernelSize()  const;
+    int mode1AdaptiveBlockSize()   const;
+    int mode1AdaptiveC()           const;
+    int mode1MinContourArea()      const;
+
+    // 几何校验
+    bool   mode1EnableCollinearityCheck() const;
+    double mode1CollinearityTolerancePx()  const;
+    bool   mode1EnableRadiusCheck()        const;
+    double mode1RadiusTolerancePx()        const;
 
     // -------------------------------------------------------------------
     // 模式2  —  黑色圆柱检测

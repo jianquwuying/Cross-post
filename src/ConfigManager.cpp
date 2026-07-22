@@ -197,35 +197,34 @@ int ConfigManager::mode0MorphKernelSize() const {
 // ---------------------------------------------------------------------------
 // 模式1
 // ---------------------------------------------------------------------------
-double ConfigManager::mode1ClaheClipLimit() const {
-    return getRequired<double>(config_["mode1"], "clahe_clip_limit");
-}
-int ConfigManager::mode1ClaheTileSize() const {
-    return getRequired<int>(config_["mode1"], "clahe_tile_size");
-}
-int ConfigManager::mode1MorphKernelSize() const {
-    return getRequired<int>(config_["mode1"], "morph_kernel_size");
-}
 int ConfigManager::mode1GaussianKernelSize() const {
     return getRequired<int>(config_["mode1"], "gaussian_kernel_size");
 }
-double ConfigManager::mode1HoughDp() const {
-    return getRequired<double>(config_["mode1"], "hough_dp");
+int ConfigManager::mode1AdaptiveBlockSize() const {
+    return getRequired<int>(config_["mode1"], "adaptive_block_size");
 }
-double ConfigManager::mode1HoughMinDist() const {
-    return getRequired<double>(config_["mode1"], "hough_min_dist");
+int ConfigManager::mode1AdaptiveC() const {
+    return getRequired<int>(config_["mode1"], "adaptive_c");
 }
-double ConfigManager::mode1HoughParam1() const {
-    return getRequired<double>(config_["mode1"], "hough_param1");
+int ConfigManager::mode1MinContourArea() const {
+    return getRequired<int>(config_["mode1"], "min_contour_area");
 }
-double ConfigManager::mode1HoughParam2() const {
-    return getRequired<double>(config_["mode1"], "hough_param2");
+
+bool ConfigManager::mode1EnableCollinearityCheck() const {
+    return getRequired<bool>(config_["mode1"]["geometry_filter"],
+                             "enable_collinearity_check");
 }
-int ConfigManager::mode1HoughMinRadius() const {
-    return getRequired<int>(config_["mode1"], "hough_min_radius");
+double ConfigManager::mode1CollinearityTolerancePx() const {
+    return getRequired<double>(config_["mode1"]["geometry_filter"],
+                               "collinearity_tolerance_px");
 }
-int ConfigManager::mode1HoughMaxRadius() const {
-    return getRequired<int>(config_["mode1"], "hough_max_radius");
+bool ConfigManager::mode1EnableRadiusCheck() const {
+    return getRequired<bool>(config_["mode1"]["geometry_filter"],
+                             "enable_radius_check");
+}
+double ConfigManager::mode1RadiusTolerancePx() const {
+    return getRequired<double>(config_["mode1"]["geometry_filter"],
+                               "radius_tolerance_px");
 }
 
 // ---------------------------------------------------------------------------

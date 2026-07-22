@@ -337,6 +337,8 @@ static void serialLoop(SerialPort& serial,
                 // writeResult 已记录 WARN 日志
                 // 继续 —— 不阻塞
             }
+            // 连续多包间隔（100µs），防止串口粘包
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
         }
     }
 

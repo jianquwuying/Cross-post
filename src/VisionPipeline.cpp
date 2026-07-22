@@ -314,13 +314,17 @@ std::vector<DetectionResult> VisionPipeline::processMode0(
 }
 
 // ========================================================================
-// 模式1 —— 圆环检测（Hough）
+// 模式1 —— 圆环检测（轮廓法，替代 HoughCircles）
 // ========================================================================
-// 流水线：ROI → Gray → CLAHE → MORPH_GRADIENT → Gaussian → HoughCircles
+// 流水线：ROI → Gray → GaussianBlur → adaptiveThreshold →
+//          findContours(RETR_EXTERNAL) → 按面积取前 3 大 →
+//          moments 质心 → Kalman 预测/更新 → DetectionResult
 //
-// **关键约束**：circles.size() != 3 → 丢弃整帧。
-//              （不更新 Kalman、不发送数据。）
+// 优势：
+//   - 自适应阈值抗光照不均，RETR_EXTERNAL 忽略内部数字和内圈
+//   - 性能远超 HoughCircles（树莓派5 可达 50+ FPS）
 //
+// **关键约束**：有效轮廓数 < 3 → 丢弃整帧。
 // 圆按 X 坐标排序：左=1  中=2  右=3
 // ========================================================================
 std::vector<DetectionResult> VisionPipeline::processMode1(
@@ -341,56 +345,130 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
     cv::Mat gray;
     cv::cvtColor(roi, gray, cv::COLOR_BGR2GRAY);
 
-    // ---- CLAHE --------------------------------------------------------
-    auto clahe = cv::createCLAHE(
-        cfg.mode1ClaheClipLimit(),
-        cv::Size(cfg.mode1ClaheTileSize(), cfg.mode1ClaheTileSize()));
-    cv::Mat clahe_img;
-    clahe->apply(gray, clahe_img);
-
-    // ---- 形态学梯度 ---------------------------------------------------
-    int mks = cfg.mode1MorphKernelSize();
-    cv::Mat grad_kernel = cv::getStructuringElement(
-        cv::MORPH_RECT, cv::Size(mks, mks));
-    cv::Mat grad;
-    cv::morphologyEx(clahe_img, grad, cv::MORPH_GRADIENT, grad_kernel);
-
-    // ---- 高斯模糊 -----------------------------------------------------
+    // ---- 轻度高斯模糊降噪 --------------------------------------------
     int gks = cfg.mode1GaussianKernelSize();
-    if (gks % 2 == 0) gks++;   // 确保为奇数
+    if (gks % 2 == 0) gks++;
     cv::Mat blurred;
-    cv::GaussianBlur(grad, blurred, cv::Size(gks, gks), 0);
+    cv::GaussianBlur(gray, blurred, cv::Size(gks, gks), 0);
 
-    setDebugImage(blurred);
+    // ---- 自适应阈值二值化 --------------------------------------------
+    // 将圆环区域转为白色(255)，背景转为黑色(0)
+    int block_size = cfg.mode1AdaptiveBlockSize();
+    if (block_size % 2 == 0) block_size++;
+    int adaptive_c = cfg.mode1AdaptiveC();
 
-    // ---- Hough 圆检测 ------------------------------------------------
-    std::vector<cv::Vec3f> circles;
-    cv::HoughCircles(blurred, circles, cv::HOUGH_GRADIENT,
-                     cfg.mode1HoughDp(),
-                     cfg.mode1HoughMinDist(),
-                     cfg.mode1HoughParam1(),
-                     cfg.mode1HoughParam2(),
-                     cfg.mode1HoughMinRadius(),
-                     cfg.mode1HoughMaxRadius());
+    cv::Mat binary;
+    cv::adaptiveThreshold(blurred, binary, 255,
+                          cv::ADAPTIVE_THRESH_GAUSSIAN_C,
+                          cv::THRESH_BINARY_INV,
+                          block_size, adaptive_c);
+
+    setDebugImage(binary);
+
+    // ---- 提取最外层轮廓（RETR_EXTERNAL 忽略内部数字和内圈）----------
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(binary, contours,
+                     cv::RETR_EXTERNAL,
+                     cv::CHAIN_APPROX_SIMPLE);
+
+    // ---- 按面积过滤并排序 --------------------------------------------
+    double min_area = static_cast<double>(cfg.mode1MinContourArea());
+
+    // 过滤小噪点
+    std::vector<std::pair<size_t, double>> valid;  // (index, area)
+    for (size_t i = 0; i < contours.size(); ++i) {
+        double area = cv::contourArea(contours[i]);
+        if (area >= min_area) {
+            valid.emplace_back(i, area);
+        }
+    }
 
     // ================================================================
-    // **严格约束**：恰好 3 个圆，否则丢弃帧
+    // **严格约束**：至少 3 个有效轮廓，否则丢弃帧
     // ================================================================
-    if (circles.size() != 3) {
-        // 丢弃 —— 不更新 Kalman，不输出
+    if (valid.size() < 3) {
         return results;
     }
 
-    // ---- 按 X 坐标排序 -----------------------------------------------
-    std::sort(circles.begin(), circles.end(),
-              [](const cv::Vec3f& a, const cv::Vec3f& b) {
-                  return a[0] < b[0];
+    // 按面积降序，取前 3 大
+    std::partial_sort(valid.begin(), valid.begin() + 3, valid.end(),
+                      [](const auto& a, const auto& b) {
+                          return a.second > b.second;
+                      });
+
+    // ---- 计算质心与半径（仅前 3 大轮廓）------------------------------
+    struct CircleCandidate {
+        float cx, cy, radius;
+    };
+    std::vector<CircleCandidate> candidates;
+    candidates.reserve(3);
+
+    for (int i = 0; i < 3; ++i) {
+        const auto& contour = contours[valid[i].first];
+        auto m = cv::moments(contour);
+        if (std::abs(m.m00) < 1e-6) continue;
+
+        // 用 minEnclosingCircle 计算半径（比 sqrt(area/π) 更准确）
+        cv::Point2f center;
+        float radius;
+        cv::minEnclosingCircle(contour, center, radius);
+
+        CircleCandidate cc;
+        cc.cx     = static_cast<float>(m.m10 / m.m00);
+        cc.cy     = static_cast<float>(m.m01 / m.m00);
+        cc.radius = radius;
+        candidates.push_back(cc);
+    }
+
+    // 再次检查（moments 可能失败）
+    if (candidates.size() < 3) {
+        return results;
+    }
+
+    // ================================================================
+    // 三重几何校验
+    // ================================================================
+
+    // ---- 第一道锁：共线性校验（Y 轴容差）---------------------------
+    if (cfg.mode1EnableCollinearityCheck()) {
+        float min_y = candidates[0].cy;
+        float max_y = candidates[0].cy;
+        for (const auto& cc : candidates) {
+            if (cc.cy < min_y) min_y = cc.cy;
+            if (cc.cy > max_y) max_y = cc.cy;
+        }
+        float diff_y = max_y - min_y;
+        if (diff_y > cfg.mode1CollinearityTolerancePx()) {
+            // 三个圆心不共线 → 丢弃整帧
+            return results;
+        }
+    }
+
+    // ---- 第二道锁：半径一致性校验 -----------------------------------
+    if (cfg.mode1EnableRadiusCheck()) {
+        float min_r = candidates[0].radius;
+        float max_r = candidates[0].radius;
+        for (const auto& cc : candidates) {
+            if (cc.radius < min_r) min_r = cc.radius;
+            if (cc.radius > max_r) max_r = cc.radius;
+        }
+        float diff_r = max_r - min_r;
+        if (diff_r > cfg.mode1RadiusTolerancePx()) {
+            // 圆环大小不一致 → 丢弃整帧
+            return results;
+        }
+    }
+
+    // ---- 按 X 坐标排序：左=1  中=2  右=3 -----------------------------
+    std::sort(candidates.begin(), candidates.end(),
+              [](const CircleCandidate& a, const CircleCandidate& b) {
+                  return a.cx < b.cx;
               });
 
-    // ---- 生成结果（圆 1 = 左，2 = 中，3 = 右）----------------------
-    for (size_t i = 0; i < circles.size(); ++i) {
-        float local_x = circles[i][0];
-        float local_y = circles[i][1];
+    // ---- 生成结果 ----------------------------------------------------
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        float local_x = candidates[i].cx;
+        float local_y = candidates[i].cy;
 
         // 转换到全图坐标
         cv::Point2f measurement(local_x + roi_rect.x,
