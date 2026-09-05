@@ -65,8 +65,12 @@ static void cameraLoop(CameraCapture& camera,
                        bool record_mode,
                        const std::string& record_dir,
                        const std::string& record_fourcc,
-                       double record_fps) {
+                       double record_fps,
+                       int target_fps) {
     LOG_INFO("CameraThread 已启动");
+
+    // 帧间隔（微秒），视频回放时用于模拟真实摄像头帧率
+    auto frame_interval_us = std::chrono::microseconds(1000000 / target_fps);
 
     // ---- 视频录制器 ---------------------------------------------------
     cv::VideoWriter video_writer;
@@ -95,6 +99,8 @@ static void cameraLoop(CameraCapture& camera,
 
     // ---- 主循环 -------------------------------------------------------
     while (running_) {
+        auto t_loop_start = std::chrono::steady_clock::now();
+
         auto frame_opt = camera.read();
         if (!frame_opt.has_value()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -116,6 +122,14 @@ static void cameraLoop(CameraCapture& camera,
         frame_buffer.put(std::move(fd));
 
         fps_counter.tick();
+
+        // 帧率控制：视频回放时若读取过快，等待以模拟真实摄像头帧率
+        auto t_loop_end = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+                           t_loop_end - t_loop_start);
+        if (elapsed < frame_interval_us) {
+            std::this_thread::sleep_for(frame_interval_us - elapsed);
+        }
     }
 
     if (video_writer.isOpened()) {
@@ -403,6 +417,7 @@ int main(int argc, char* argv[]) {
     bool draw_en     = cfg.uiDrawEnable();
     bool show_bin    = cfg.showBinary();
     int  send_int_ms = cfg.serialSendIntervalMs();
+    int  cam_fps     = cfg.cameraFps();
     bool rec_mode    = cfg.recordMode();
     std::string rec_dir    = cfg.recordOutputDir();
     std::string rec_fourcc = cfg.recordFourcc();
@@ -415,7 +430,8 @@ int main(int argc, char* argv[]) {
                           rec_mode,
                           rec_dir,
                           rec_fourcc,
-                          rec_fps);
+                          rec_fps,
+                          cam_fps);
 
     std::thread process_th(processLoop,
                            std::ref(frame_buffer),

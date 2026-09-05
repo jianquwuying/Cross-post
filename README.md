@@ -48,13 +48,26 @@ make -j4
 # 自定义配置
 ./visionpost /path/to/custom.yaml
 
-# 脚本启动（自动设置串口权限）
-../scripts/start.sh
-../scripts/stop.sh
-../scripts/restart.sh
+# 看门狗脚本（整合自启动，自动设置串口权限）
+../scripts/autostart.sh              # = start：前台监管，崩溃自动拉起，Ctrl+C 整体退出
+../scripts/autostart.sh stop         # 优雅停止
+../scripts/autostart.sh status       # 查看运行状态
 ```
 
 按 `Ctrl+C` 发送 SIGINT 优雅退出。
+
+## 开机自启动（看门狗）
+
+在桌面「启动应用程序」添加启动项，命令粘贴（会自动弹出终端实时显示看门狗日志）：
+
+```bash
+gnome-terminal --title="Visionpost 看门狗" -- bash /home/shu/Cross-post/scripts/autostart.sh
+```
+
+`autostart.sh` 同时承担启动/看门狗/停止/状态查询（`start|stop|restart|status`）：
+visionpost 崩溃后自动重启，连续快速崩溃超过 `MAX_RESTARTS` 次（默认 10）则放弃并保持终端提示；
+串口权限通过 `echo <密码> | sudo -S chmod 666 /dev/ttyACM0` 自动放权（密码在脚本头部 `SUDO_PASS` 修改）。
+
 
 ---
 
@@ -283,7 +296,5 @@ camera:
 │   ├── ThreadSafeSendQueue.h   # 生产者-消费者队列 + DetectionResult 定义
 │   └── ColorOrder.h            # 6 色枚举 + 名称数组
 └── scripts/
-    ├── start.sh                # chmod 串口权限 + 启动 visionpost
-    ├── stop.sh                 # SIGINT 优雅关闭（5 秒超时→强制 kill）
-    └── restart.sh              # stop + start
+    └── autostart.sh            # 唯一自启动脚本：开机注册 + 看门狗（start/stop/restart/status）
 ```

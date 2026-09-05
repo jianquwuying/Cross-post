@@ -21,7 +21,8 @@ camera:
   index: 0                         # 摄像头设备索引（/dev/video0 = 0, /dev/video1 = 1, …）
                                    # 仅当 video_path 为空时生效
 
-  video_path: ""                   # 视频文件路径，用于离线测试
+  video_path: ""
+                   	           # 视频文件路径，用于离线测试
                                    # 示例："/home/shu/Videos/test.mp4"
                                    # 留空 "" 表示使用真实摄像头
 
@@ -67,7 +68,7 @@ ui:
 # 协议详情见 README.md 或 核心记忆.md 中的串口协议章节。
 # ============================================================================
 serial:
-  port: "/dev/ttyUSB0"            # 串口设备路径
+  port: "/dev/ttyACM0"            # 串口设备路径
                                    # Raspberry Pi 5 上通常是 /dev/ttyUSB0
 
   baudrate: 115200                 # 波特率
@@ -143,7 +144,7 @@ recording:
                                    # "XVID" = MPEG-4
                                    # "H264" = H.264（需额外编译支持）
 
-  fps: 60.0                        # 录制帧率
+  fps: 60                        # 录制帧率
                                    # 可与采集帧率不同（会丢帧或补帧）
 
 
@@ -259,9 +260,9 @@ mode1:
   # ---- 三重几何校验（防止误识别背景亮斑或杂物）-------------------------
   geometry_filter:
     enable_collinearity_check: true      # 是否启用共线性校验
-    collinearity_tolerance_px: 50.0      # cv::fitLine 拟合直线，圆心到直线的最大垂直距离（像素）
+    collinearity_tolerance_px: 10.0      # cv::fitLine 拟合直线，圆心到直线的最大垂直距离（像素）
     enable_radius_check: true            # 是否启用半径一致性校验
-    radius_tolerance_px: 100.0             # 半径最大像素差（大小不一致→丢弃）
+    radius_tolerance_px: 10.0             # 半径最大像素差（大小不一致→丢弃）
 
 
 # ============================================================================
@@ -306,14 +307,14 @@ mode2:
 # DEBUG 级别日志仅在 CMake -DCMAKE_BUILD_TYPE=Debug 时编译。
 # ============================================================================
 logging:
-  level: "DEBUG	"                    # 日志级别
+  level: "INFO"                    # 日志级别
                                    # "DEBUG" — 所有日志（含 Kalman 跟踪细节、串口字节）
                                    # "INFO"  — 一般信息（启动、模式切换）
                                    # "WARN"  — 警告（摄像头断连、串口发送失败）
                                    # "ERROR" — 错误（配置缺失、硬件故障）
 
-  log_to_file: true               # 是否将日志写入文件
+  log_to_file: false               # 是否将日志写入文件
                                    # true  = 同时输出到终端和文件
                                    # false = 仅输出到终端
 
-  log_file_path: "../vision.log"    # 日志文件路径（仅当 log_to_file=true 时有效）
+  log_file_path: "../record/vision.log"    # 日志文件路径（仅当 log_to_file=true 时有效）
