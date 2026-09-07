@@ -233,9 +233,19 @@ std::vector<DetectionResult> VisionPipeline::processMode0(
         cv::Scalar(255, 255, 0),  // 青
     };
 
+    // ---- 颜色启用过滤：只处理 mode0.enabled_colors 列出的颜色 ------------
+    // 被屏蔽的颜色整色跳过：不检测、不更新 Kalman、不发送。
+    // （color_id 仍为全局 0-5 索引，屏蔽不重编号，避免串口协议对不齐）
+    const auto enabled_colors = cfg.mode0EnabledColors();
+
     // ---- 逐色处理 ----------------------------------------------------
     for (int c = 0; c < kNumColors; ++c) {
         const char* color_name = kColorNames[c];
+
+        if (std::find(enabled_colors.begin(), enabled_colors.end(),
+                      color_name) == enabled_colors.end()) {
+            continue;   // 该颜色被屏蔽
+        }
 
         // 构建颜色掩码（红色可能为双区间）
         auto ranges = cfg.mode0ColorHSV(color_name);

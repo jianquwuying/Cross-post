@@ -193,6 +193,24 @@ int ConfigManager::mode0MinContourArea() const {
 int ConfigManager::mode0MorphKernelSize() const {
     return getRequired<int>(config_["mode0"], "morph_kernel_size");
 }
+std::vector<std::string> ConfigManager::mode0EnabledColors() const {
+    const auto node = config_["mode0"]["enabled_colors"];
+    if (!node || !node.IsSequence()) {
+        LOG_ERROR("缺少必需的配置键或类型不是序列: mode0.enabled_colors");
+        std::exit(EXIT_FAILURE);
+    }
+    std::vector<std::string> out;
+    out.reserve(node.size());
+    for (const auto& n : node) {
+        try {
+            out.push_back(n.as<std::string>());
+        } catch (const YAML::Exception& e) {
+            LOG_ERROR("mode0.enabled_colors 元素类型不匹配: %s", e.what());
+            std::exit(EXIT_FAILURE);
+        }
+    }
+    return out;
+}
 
 // ---------------------------------------------------------------------------
 // 模式1

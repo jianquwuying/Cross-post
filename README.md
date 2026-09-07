@@ -107,12 +107,13 @@ CameraThread ──(单槽帧缓冲)──> ProcessThread ──(发送队列)�
 
 ### 模式0 — 颜色物块检测
 
-检测 6 种颜色：**红、黄、蓝、绿、黑、青**。
+检测 6 种颜色：**红、黄、蓝、绿、黑、青**（可通过 `mode0.enabled_colors` 临时屏蔽部分颜色）。
 
 - 流水线：ROI → BGR→HSV → 逐色 `inRange` → 形态学开运算 → 轮廓 → 取最大面积 → `moments` 质心 → Kalman
 - 红色使用双 HSV 区间：`H 0–10 ∪ H 170–180`（`bitwise_or` 合并）
 - 每种颜色独立跟踪，各自持有独立的 Kalman 滤波器
 - 某颜色检测失败不影响其他颜色
+- **颜色启用过滤**：`enabled_colors` 列表之外的整色跳过（不检测/不发送）；`color_id` 仍为全局 0-5 索引，屏蔽不重编号
 - 二值化调试窗：6 色掩码合成图（各色以 BGR 色彩渲染于黑底）
 
 ### 模式1 — 单圆环数字识别（同心环剥除 + Hu矩 argmin）
@@ -225,7 +226,7 @@ kf.measurementNoiseCov  = cv::Mat::eye(2, 2, CV_32F) * yaml_scalar;
 | `kalman`    | `process_noise_cov`, `measurement_noise_cov`, `init_frames`, `lost_frame_limit` |
 | `recording` | `record_mode`, `output_dir`, `fourcc`, `fps`                 |
 | `roi`       | `x`, `y`, `width`, `height`                                  |
-| `mode0`     | `min_contour_area`, `morph_kernel_size`, 6 色 HSV 双区间      |
+| `mode0`     | `min_contour_area`, `morph_kernel_size`, `enabled_colors`, 6 色 HSV 双区间 |
 | `mode1`     | `gaussian_kernel_size`, `adaptive_block_size`, `adaptive_c`, `min_contour_area`, `morph_open_kernel_size`, `digit_roi_scale`, `digit_open_ratio`, `invert_digit`, `template_paths` |
 | `mode2`     | HSV 黑色阈值, `aspect_ratio_threshold`, `min_area`, `morph_kernel_size` |
 | `logging`   | `level`, `log_to_file`, `log_file_path`                       |
