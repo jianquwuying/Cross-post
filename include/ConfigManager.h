@@ -91,7 +91,7 @@ public:
     int mode0MorphKernelSize()  const;
 
     // -------------------------------------------------------------------
-    // 模式1  —  圆环检测（轮廓法）
+    // 模式1  —  单圆环数字识别（Hu矩 + cv::matchShapes 模板匹配）
     // -------------------------------------------------------------------
     int mode1GaussianKernelSize()  const;
     int mode1AdaptiveBlockSize()   const;
@@ -99,11 +99,10 @@ public:
     int mode1MinContourArea()      const;
     int mode1MorphOpenKernelSize() const;
 
-    // 几何校验
-    bool   mode1EnableCollinearityCheck() const;
-    double mode1CollinearityTolerancePx()  const;
-    bool   mode1EnableRadiusCheck()        const;
-    double mode1RadiusTolerancePx()        const;
+    double mode1DigitRoiScale()        const;   // 数字 ROI 半宽 / 圆环半径
+    double mode1DigitOpenRatio()       const;   // 数字区剥环开运算核 / 圆环半径
+    bool   mode1InvertDigit()          const;   // 数字二值化是否反色
+    std::string mode1TemplatePath(int digit_id) const;  // digit_id ∈ {1,2,3}
 
     // -------------------------------------------------------------------
     // 模式2  —  黑色圆柱检测

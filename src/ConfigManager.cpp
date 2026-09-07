@@ -213,21 +213,29 @@ int ConfigManager::mode1MorphOpenKernelSize() const {
     return getRequired<int>(config_["mode1"], "morph_open_kernel_size");
 }
 
-bool ConfigManager::mode1EnableCollinearityCheck() const {
-    return getRequired<bool>(config_["mode1"]["geometry_filter"],
-                             "enable_collinearity_check");
+double ConfigManager::mode1DigitRoiScale() const {
+    return getRequired<double>(config_["mode1"], "digit_roi_scale");
 }
-double ConfigManager::mode1CollinearityTolerancePx() const {
-    return getRequired<double>(config_["mode1"]["geometry_filter"],
-                               "collinearity_tolerance_px");
+double ConfigManager::mode1DigitOpenRatio() const {
+    return getRequired<double>(config_["mode1"], "digit_open_ratio");
 }
-bool ConfigManager::mode1EnableRadiusCheck() const {
-    return getRequired<bool>(config_["mode1"]["geometry_filter"],
-                             "enable_radius_check");
+bool ConfigManager::mode1InvertDigit() const {
+    return getRequired<bool>(config_["mode1"], "invert_digit");
 }
-double ConfigManager::mode1RadiusTolerancePx() const {
-    return getRequired<double>(config_["mode1"]["geometry_filter"],
-                               "radius_tolerance_px");
+std::string ConfigManager::mode1TemplatePath(int digit_id) const {
+    // 模板路径的键是整数 1/2/3（YAML 中未加引号），不能用字符串 getRequired
+    auto node = config_["mode1"]["template_paths"];
+    if (!node || !node[digit_id]) {
+        LOG_ERROR("缺少必需的配置键: mode1.template_paths.%d", digit_id);
+        std::exit(EXIT_FAILURE);
+    }
+    try {
+        return node[digit_id].as<std::string>();
+    } catch (const YAML::Exception& e) {
+        LOG_ERROR("配置键 'mode1.template_paths.%d' 类型不匹配: %s",
+                  digit_id, e.what());
+        std::exit(EXIT_FAILURE);
+    }
 }
 
 // ---------------------------------------------------------------------------

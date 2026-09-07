@@ -8,9 +8,11 @@
 #include "Logger.h"
 
 #include <opencv2/imgproc.hpp>
+#include <opencv2/imgcodecs.hpp>
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 // ========================================================================
 // 构造
@@ -314,23 +316,34 @@ std::vector<DetectionResult> VisionPipeline::processMode0(
 }
 
 // ========================================================================
-// 模式1 —— 圆环检测（轮廓法，替代 HoughCircles）
+// 模式1 —— 单圆环数字识别（同心环剥除 + Hu矩模板 argmin）
 // ========================================================================
 // 流水线：ROI → Gray → GaussianBlur → adaptiveThreshold →
-//          findContours(RETR_EXTERNAL) → 按面积取前 3 大 →
-//          moments 质心 → Kalman 预测/更新 → DetectionResult
+//          MORPH_OPEN → findContours(RETR_EXTERNAL) → 取最大圆环轮廓 →
+//          moments 圆心 + minEnclosingCircle 半径 → 中心方形数字 ROI →
+//          数字自适应二值化 → 开运算剥同心细环(核∝半径) →
+//          取靠近圆心的最大墨块 → cv::matchShapes 与 3 模板对比(argmin) →
+//          Kalman → 输出单包
 //
-// 优势：
-//   - 自适应阈值抗光照不均，RETR_EXTERNAL 忽略内部数字和内圈
-//   - 性能远超 HoughCircles（树莓派5 可达 50+ FPS）
-//
-// **关键约束**：有效轮廓数 < 3 → 丢弃整帧。
-// 圆按 X 坐标排序：左=1  中=2  右=3
+// **关键特性**：
+//   - 目标视野内一次只能看到一个圆环，无排序、无共线/半径校验
+//   - 靶标为"中心数字 + 多层同心细环"；开核按半径缩放，距离无关地剥环
+//   - Hu 矩天然旋转不变，机械臂旋转下无需任何旋转模板
+//   - 该字体绝对匹配分偏高且不稳，改用三模板 argmin 判数字编号（不做绝对阈值）
 // ========================================================================
 std::vector<DetectionResult> VisionPipeline::processMode1(
     const cv::Mat& frame) {
     std::vector<DetectionResult> results;
     auto& cfg = ConfigManager::instance();
+
+    // ---- 数字模板懒加载（仅一次）--------------------------------------
+    if (!digit_templates_loaded_) {
+        if (!loadDigitTemplates()) {
+            LOG_ERROR("数字模板加载失败，模式1 无法运行");
+            return results;
+        }
+        digit_templates_loaded_ = true;
+    }
 
     // ---- ROI ----------------------------------------------------------
     cv::Rect roi_rect(cfg.roiX(), cfg.roiY(),
@@ -351,8 +364,7 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
     cv::Mat blurred;
     cv::GaussianBlur(gray, blurred, cv::Size(gks, gks), 0);
 
-    // ---- 自适应阈值二值化 --------------------------------------------
-    // 将圆环区域转为白色(255)，背景转为黑色(0)
+    // ---- 自适应阈值二值化（圆环区域转白，背景转黑）-------------------
     int block_size = cfg.mode1AdaptiveBlockSize();
     if (block_size % 2 == 0) block_size++;
     int adaptive_c = cfg.mode1AdaptiveC();
@@ -363,157 +375,215 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
                           cv::THRESH_BINARY_INV,
                           block_size, adaptive_c);
 
-    // ---- 形态学开运算：抹掉顶部/边缘细微白点和破碎线条 ---------------
+    // ---- 形态学开运算：抹掉细微白点和破碎线条 ------------------------
     int open_ksize = cfg.mode1MorphOpenKernelSize();
     if (open_ksize % 2 == 0) open_ksize++;
     cv::Mat open_kernel = cv::getStructuringElement(
         cv::MORPH_ELLIPSE, cv::Size(open_ksize, open_ksize));
     cv::morphologyEx(binary, binary, cv::MORPH_OPEN, open_kernel);
 
+    // 环级二值图先设为调试图：若后续阶段失败返回，画面停留在此图，
+    // 真实反映"静止时圆环是否断裂/消失"，便于现场定位（数字路径随后覆盖）
     setDebugImage(binary);
 
-    // ---- 提取最外层轮廓（RETR_EXTERNAL 忽略内部数字和内圈）----------
+    // ---- 提取最外层轮廓，取最大的单个圆环 -----------------------------
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(binary, contours,
                      cv::RETR_EXTERNAL,
                      cv::CHAIN_APPROX_SIMPLE);
+    if (contours.empty()) {
+        return results;
+    }
 
-    // ---- 按面积过滤并排序 --------------------------------------------
     double min_area = static_cast<double>(cfg.mode1MinContourArea());
-
-    // 过滤小噪点
-    std::vector<std::pair<size_t, double>> valid;  // (index, area)
-    for (size_t i = 0; i < contours.size(); ++i) {
-        double area = cv::contourArea(contours[i]);
-        if (area >= min_area) {
-            valid.emplace_back(i, area);
+    const std::vector<cv::Point>* largest_ring = nullptr;
+    double largest_area = 0.0;
+    for (const auto& c : contours) {
+        double a = cv::contourArea(c);
+        if (a >= min_area && a > largest_area) {
+            largest_area = a;
+            largest_ring = &c;
         }
     }
+    if (!largest_ring) {
+        return results;   // 无满足面积阈值的圆环
+    }
 
-    // ================================================================
-    // **严格约束**：至少 3 个有效轮廓，否则丢弃帧
-    // ================================================================
-    if (valid.size() < 3) {
+    // ---- 圆心（moments）与半径（minEnclosingCircle）-------------------
+    auto m = cv::moments(*largest_ring);
+    if (std::abs(m.m00) < 1e-6) {
+        return results;
+    }
+    float cx = static_cast<float>(m.m10 / m.m00);
+    float cy = static_cast<float>(m.m01 / m.m00);
+
+    cv::Point2f dummy_center;
+    float radius = 0.0f;
+    cv::minEnclosingCircle(*largest_ring, dummy_center, radius);
+    if (radius < 1.0f) {
         return results;
     }
 
-    // 按面积降序，取前 3 大
-    std::partial_sort(valid.begin(), valid.begin() + 3, valid.end(),
-                      [](const auto& a, const auto& b) {
-                          return a.second > b.second;
-                      });
-
-    // ---- 计算质心与半径（仅前 3 大轮廓）------------------------------
-    struct CircleCandidate {
-        float cx, cy, radius;
-    };
-    std::vector<CircleCandidate> candidates;
-    candidates.reserve(3);
-
-    for (int i = 0; i < 3; ++i) {
-        const auto& contour = contours[valid[i].first];
-        auto m = cv::moments(contour);
-        if (std::abs(m.m00) < 1e-6) continue;
-
-        // 用 minEnclosingCircle 计算半径（比 sqrt(area/π) 更准确）
-        cv::Point2f center;
-        float radius;
-        cv::minEnclosingCircle(contour, center, radius);
-
-        CircleCandidate cc;
-        cc.cx     = static_cast<float>(m.m10 / m.m00);
-        cc.cy     = static_cast<float>(m.m01 / m.m00);
-        cc.radius = radius;
-        candidates.push_back(cc);
+    // ---- 数字 ROI：中心方形裁剪（半宽 = digit_roi_scale × 半径）---------
+    // 靶标是"中心数字 + 多层同心细环"。取 0.5~0.75 的通用裁剪：
+    // 太小会裁到数字（数字几乎与最内圈同大），太大会把外圈细环框进来。
+    int half = cvRound(static_cast<double>(cfg.mode1DigitRoiScale()) * radius);
+    if (half < 8) {
+        return results;
     }
+    cv::Rect digit_rect(cvRound(cx) - half, cvRound(cy) - half,
+                        half * 2, half * 2);
+    digit_rect &= cv::Rect(0, 0, gray.cols, gray.rows);
+    if (digit_rect.width < 8 || digit_rect.height < 8) {
+        return results;
+    }
+    // 从"高斯模糊后"的图像取数字 ROI：抑制传感器噪声/反光细碎点，
+    // 与环级自适应阈值同源，结果更稳定
+    cv::Mat digit_gray = blurred(digit_rect);
 
-    // 再次检查（moments 可能失败）
-    if (candidates.size() < 3) {
+    // ---- 数字二值化（自适应阈值；暗结构为白前景，抗光照渐变）------------
+    int thresh_type = cfg.mode1InvertDigit()
+                      ? cv::THRESH_BINARY
+                      : cv::THRESH_BINARY_INV;
+    int dblock = std::min(digit_gray.cols, digit_gray.rows) / 3;
+    if (dblock % 2 == 0) dblock++;
+    dblock = std::max(dblock, 15);
+    dblock = std::min(dblock, 63);
+    cv::Mat digit_binary;
+    cv::adaptiveThreshold(digit_gray, digit_binary, 255,
+                          cv::ADAPTIVE_THRESH_GAUSSIAN_C,
+                          thresh_type, dblock,
+                          cfg.mode1AdaptiveC());
+
+    // ---- 开运算剥掉同心细环（核随半径缩放）------------------------------
+    // 数字笔画粗、圆环线细；环线宽度与靶标半径成比例(随距离变化)，
+    // 故开核取 digit_open_ratio × 半径，才能在远近一致地把细环剥掉、
+    // 保留粗数字笔画。实测 ratio=0.05 通解。
+    int do_ksize = cvRound(static_cast<double>(cfg.mode1DigitOpenRatio()) * radius);
+    if (do_ksize < 3) do_ksize = 3;
+    if (do_ksize % 2 == 0) do_ksize++;
+    cv::Mat do_kernel = cv::getStructuringElement(
+        cv::MORPH_ELLIPSE, cv::Size(do_ksize, do_ksize));
+    cv::morphologyEx(digit_binary, digit_binary, cv::MORPH_OPEN, do_kernel);
+
+    setDebugImage(digit_binary);
+
+    // ---- 数字轮廓：取"靠近圆心的最大墨块" ------------------------------
+    // 剥环后 ROI 内数字是唯一的粗结构。按面积最大者取整（面积优先、次中心近），
+    // 用面积/中心偏移/宽高比门槛排除残余弧块与噪点。**不做贴边剔除**——
+    // 数字常常撑满整幅 ROI，贴边是正常现象而非外框。
+    std::vector<std::vector<cv::Point>> digit_contours;
+    cv::findContours(digit_binary, digit_contours,
+                     cv::RETR_EXTERNAL,
+                     cv::CHAIN_APPROX_SIMPLE);
+    if (digit_contours.empty()) {
+        return results;
+    }
+    const double roi_area =
+        static_cast<double>(digit_binary.rows) * digit_binary.cols;
+    const std::vector<cv::Point>* digit_blob = nullptr;
+    double digit_area = 0.0;
+    double best_offset = 1e9;
+    for (const auto& c : digit_contours) {
+        double a = cv::contourArea(c);
+        if (a < roi_area * 0.005 || a > roi_area * 0.6) continue;
+
+        auto mm = cv::moments(c);
+        if (std::abs(mm.m00) < 1e-6) continue;
+        double cxx = mm.m10 / mm.m00;
+        double cyy = mm.m01 / mm.m00;
+        double off = std::hypot(cxx - half, cyy - half) / half;
+        if (off > 0.6) continue;                // 必须靠近 ROI 中心
+
+        cv::Rect bb = cv::boundingRect(c);
+        double aspect = static_cast<double>(bb.height) /
+                        std::max(bb.width, 1);
+        if (aspect < 0.7 || aspect > 3.5) continue;   // 排除横向环弧/长残块
+
+        if (a > digit_area ||
+            (std::abs(a - digit_area) < 1e-6 && off < best_offset)) {
+            digit_area = a;
+            best_offset = off;
+            digit_blob = &c;
+        }
+    }
+    if (!digit_blob) {
         return results;
     }
 
-    // ================================================================
-    // 三重几何校验
-    // ================================================================
-
-    // ---- 第一道锁：共线性校验（cv::fitLine 最小二乘拟合）----------
-    if (cfg.mode1EnableCollinearityCheck()) {
-        // 收集 3 个圆心坐标
-        std::vector<cv::Point2f> centers;
-        for (const auto& cc : candidates) {
-            centers.emplace_back(cc.cx, cc.cy);
-        }
-
-        // 最小二乘直线拟合
-        cv::Vec4f line;
-        cv::fitLine(centers, line, cv::DIST_L2, 0, 0.01, 0.01);
-        // line: (vx, vy, x0, y0) —— 方向向量已归一化
-
-        // 计算每个点到拟合直线的垂直距离
-        float max_deviation = 0.0f;
-        for (const auto& p : centers) {
-            // 点到直线的垂直距离 = |(p - p0) × v| / |v|
-            // 因为 |v| = 1，简化为 |cross(p - p0, v)|
-            float dx = p.x - line[2];
-            float dy = p.y - line[3];
-            float dist = std::abs(dx * line[1] - dy * line[0]);
-            if (dist > max_deviation) max_deviation = dist;
-        }
-
-        if (max_deviation > cfg.mode1CollinearityTolerancePx()) {
-            // 三个圆心偏离直线过大 → 丢弃整帧
-            return results;
+    // ---- Hu 矩模板匹配（matchShapes 旋转不变，argmin 三选一）----------
+    // 该衬线字体下绝对匹配分与模板笔画粗细相关、偏高且同类/异类分差不稳，
+    // 不做绝对阈值，直接取与三个模板中最小者对应的编号（实测 argmin 全对）。
+    double best_score = std::numeric_limits<double>::max();
+    int best_id = -1;
+    for (size_t t = 0; t < template_contours_.size(); ++t) {
+        double d = cv::matchShapes(*digit_blob, template_contours_[t],
+                                   cv::CONTOURS_MATCH_I1, 0.0);
+        if (d < best_score) {
+            best_score = d;
+            best_id = static_cast<int>(t) + 1;
         }
     }
 
-    // ---- 第二道锁：半径一致性校验 -----------------------------------
-    if (cfg.mode1EnableRadiusCheck()) {
-        float min_r = candidates[0].radius;
-        float max_r = candidates[0].radius;
-        for (const auto& cc : candidates) {
-            if (cc.radius < min_r) min_r = cc.radius;
-            if (cc.radius > max_r) max_r = cc.radius;
-        }
-        float diff_r = max_r - min_r;
-        if (diff_r > cfg.mode1RadiusTolerancePx()) {
-            // 圆环大小不一致 → 丢弃整帧
-            return results;
-        }
-    }
+    // ---- 坐标转换 + Kalman -------------------------------------------
+    cv::Point2f measurement(cx + roi_rect.x, cy + roi_rect.y);
+    cv::Point2f filtered = predictAndUpdate(best_id, measurement, true);
 
-    // ---- 按 X 坐标排序：左=1  中=2  右=3 -----------------------------
-    std::sort(candidates.begin(), candidates.end(),
-              [](const CircleCandidate& a, const CircleCandidate& b) {
-                  return a.cx < b.cx;
-              });
+    filtered.x = std::max(0.0f, std::min(filtered.x,
+                          static_cast<float>(frame.cols - 1)));
+    filtered.y = std::max(0.0f, std::min(filtered.y,
+                          static_cast<float>(frame.rows - 1)));
 
-    // ---- 生成结果 ----------------------------------------------------
-    for (size_t i = 0; i < candidates.size(); ++i) {
-        float local_x = candidates[i].cx;
-        float local_y = candidates[i].cy;
-
-        // 转换到全图坐标
-        cv::Point2f measurement(local_x + roi_rect.x,
-                                local_y + roi_rect.y);
-
-        // 键 = 圆编号 (1, 2, 3)
-        int key = static_cast<int>(i) + 1;
-        cv::Point2f filtered = predictAndUpdate(key, measurement, true);
-
-        filtered.x = std::max(0.0f, std::min(filtered.x,
-                              static_cast<float>(frame.cols - 1)));
-        filtered.y = std::max(0.0f, std::min(filtered.y,
-                              static_cast<float>(frame.rows - 1)));
-
-        DetectionResult dr;
-        dr.target_type = 2;   // 2 = 圆环
-        dr.color_id    = static_cast<uint8_t>(key);
-        dr.x           = static_cast<uint16_t>(filtered.x);
-        dr.y           = static_cast<uint16_t>(filtered.y);
-        results.push_back(dr);
-    }
+    DetectionResult dr;
+    dr.target_type = 2;   // 2 = 圆环
+    dr.color_id    = static_cast<uint8_t>(best_id);   // 数字编号 1/2/3
+    dr.x           = static_cast<uint16_t>(filtered.x);
+    dr.y           = static_cast<uint16_t>(filtered.y);
+    results.push_back(dr);
 
     return results;
+}
+
+// ========================================================================
+// 模式1 —— 数字模板加载（仅一次）
+// ========================================================================
+bool VisionPipeline::loadDigitTemplates() {
+    auto& cfg = ConfigManager::instance();
+    template_contours_.clear();
+    template_contours_.reserve(3);
+
+    for (int id = 1; id <= 3; ++id) {
+        std::string path = cfg.mode1TemplatePath(id);
+        cv::Mat tmpl = cv::imread(path, cv::IMREAD_GRAYSCALE);
+        if (tmpl.empty()) {
+            LOG_ERROR("加载数字模板失败: %s", path.c_str());
+            return false;
+        }
+
+        // 模板为白底黑字 → 反色使数字为白（前景），与当前数字二值化约定一致
+        cv::Mat bin;
+        cv::threshold(tmpl, bin, 0, 255,
+                      cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
+
+        std::vector<std::vector<cv::Point>> cnts;
+        cv::findContours(bin, cnts, cv::RETR_EXTERNAL,
+                         cv::CHAIN_APPROX_SIMPLE);
+        if (cnts.empty()) {
+            LOG_ERROR("数字模板无有效轮廓: %s", path.c_str());
+            return false;
+        }
+
+        auto largest = std::max_element(
+            cnts.begin(), cnts.end(),
+            [](const std::vector<cv::Point>& a,
+               const std::vector<cv::Point>& b) {
+                return cv::contourArea(a) < cv::contourArea(b);
+            });
+        template_contours_.push_back(*largest);
+    }
+
+    LOG_INFO("数字模板加载完成 (3 个)");
+    return true;
 }
 
 // ========================================================================

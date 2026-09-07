@@ -22,7 +22,7 @@
 struct DetectionResult {
     uint8_t target_type;  // 1 = 颜色物块  2 = 圆环  3 = 圆柱
     uint8_t color_id;     // 模式0：颜色索引 (0-5)
-                          // 模式1：圆环编号 (1-3，按 X 排序)
+                          // 模式1：数字编号 (1-3，识别结果)
                           // 模式2：未使用
     uint16_t x;           // 全图 X 坐标
     uint16_t y;           // 全图 Y 坐标

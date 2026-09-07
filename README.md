@@ -115,24 +115,28 @@ CameraThread ──(单槽帧缓冲)──> ProcessThread ──(发送队列)�
 - 某颜色检测失败不影响其他颜色
 - 二值化调试窗：6 色掩码合成图（各色以 BGR 色彩渲染于黑底）
 
-### 模式1 — 圆环检测（轮廓法 + 三重几何校验）
+### 模式1 — 单圆环数字识别（同心环剥除 + Hu矩 argmin）
 
-替代传统 HoughCircles，使用轮廓法检测，树莓派5 可达 50+ FPS。
+目标视野内一次只能看到一个圆环。靶标实物为「**中心衬线数字 1/2/3 + 多层同心细环**」的印章式图案；摄像头固定在机械臂上可能旋转。识别原理：
 
-- 流水线：ROI → 灰度化 → 高斯模糊 → 自适应阈值 → 形态学开运算 → `findContours(RETR_EXTERNAL)` → 取前 3 大面积 → `moments` 质心 + `minEnclosingCircle` 半径
-- `RETR_EXTERNAL` 只取最外层轮廓，自动忽略内部数字"1、2、3"和内圈
+1. 提取最大外环轮廓，得圆心与半径；
+2. 中心方形裁剪（半宽 = `digit_roi_scale × 半径`）；
+3. 数字区自适应二值化后，用**随半径缩放的开运算核**（`digit_open_ratio × 半径`）把同心细环剥掉、只留粗数字笔画 —— 环线宽度与靶标半径成比例，故开核也随半径缩放，远近通用；
+4. 取靠近圆心的最大墨块作为数字轮廓；
+5. `cv::matchShapes`（Hu 矩，旋转不变）与 3 个模板对比，**取三模板中最小者（argmin）** 判数字编号 —— 该字体绝对匹配分偏高且不稳，不做绝对阈值。
 
-**三重几何校验（YAML `geometry_filter` 可独立开关）：**
+- 无排序、无共线/半径校验 —— 单包输出
+- 成功 → `target_type=2`，`color_id=数字编号(1/2/3)`，`x/y=圆心质心`；任一阶段失败 → `return {}`，不更新 Kalman，不发送
+- 二值化调试窗：数字 ROI（剥环后）二值化图
 
-| 锁   | 校验项       | 方法                                                      | 失败处理   |
-|------|-------------|-----------------------------------------------------------|-----------|
-| 1    | 数量         | 有效轮廓 ≥ 3                                               | 丢弃整帧    |
-| 2    | 共线性       | `cv::fitLine(cv::DIST_L2)` 最小二乘拟合，圆心垂直距离 ≤ 阈值 | 丢弃整帧    |
-| 3    | 半径一致性   | `max_r − min_r ≤ radius_tolerance_px`                      | 丢弃整帧    |
+数字模板（`templates/num1.png` / `num2.png` / `num3.png`）需为**正视角、纯白底黑字**的灰度图，程序首次进入模式1时自动加载一次。
 
-- 任意校验失败 → `return {}`，不更新 Kalman，不发送
-- 通过后按 X 坐标排序：左=1、中=2、右=3
-- 二值化调试窗：形态学开运算后的二值图
+制作模板用配套工具（摄像头实时框选 → 自动二值化 → 保存）：
+
+```bash
+python3 tools/capture_templates.py              # 实时画面按 1/2/3 键框选对应数字
+python3 tools/capture_templates.py --image pic.jpg   # 从已有图片取图
+```
 
 ### 模式2 — 黑色圆柱检测
 
@@ -197,7 +201,7 @@ kf.measurementNoiseCov  = cv::Mat::eye(2, 2, CV_32F) * yaml_scalar;
 | 0    | `0xCD`      | 帧头                                                       |
 | 1    | `0x06`      | 数据类型                                                   |
 | 2    | TargetType  | 1=颜色物块  2=圆环  3=圆柱                                  |
-| 3    | Color       | 模式0：颜色索引(0=红,1=黄,2=蓝,3=绿,4=黑,5=青)；模式1：圆编号(1-3) |
+| 3    | Color       | 模式0：颜色索引(0=红,1=黄,2=蓝,3=绿,4=黑,5=青)；模式1：数字编号(1-3) |
 | 4-5  | X           | `uint16_t` 大端序                                          |
 | 6-7  | Y           | `uint16_t` 大端序                                          |
 | 8    | `0xDC`      | 帧尾                                                       |
@@ -222,7 +226,7 @@ kf.measurementNoiseCov  = cv::Mat::eye(2, 2, CV_32F) * yaml_scalar;
 | `recording` | `record_mode`, `output_dir`, `fourcc`, `fps`                 |
 | `roi`       | `x`, `y`, `width`, `height`                                  |
 | `mode0`     | `min_contour_area`, `morph_kernel_size`, 6 色 HSV 双区间      |
-| `mode1`     | `gaussian_kernel_size`, `adaptive_block_size`, `adaptive_c`, `min_contour_area`, `morph_open_kernel_size`, `geometry_filter` |
+| `mode1`     | `gaussian_kernel_size`, `adaptive_block_size`, `adaptive_c`, `min_contour_area`, `morph_open_kernel_size`, `digit_roi_scale`, `digit_open_ratio`, `invert_digit`, `template_paths` |
 | `mode2`     | HSV 黑色阈值, `aspect_ratio_threshold`, `min_area`, `morph_kernel_size` |
 | `logging`   | `level`, `log_to_file`, `log_file_path`                       |
 
@@ -252,7 +256,7 @@ camera:
 |---------------|------------------------|----------------------------------------------|
 | 主窗口         | `ui.imshow_enable`     | OpenCV 窗口，含 FPS/延迟/模式/队列/串口状态     |
 | 叠加层         | `ui.ui_draw_enable`    | 目标位置圆圈+标签、ROI 矩形框                   |
-| 二值化调试窗   | `ui.show_binary`       | 模式0: 彩色掩码合成  模式1: 二值图  模式2: 黑色掩码 |
+| 二值化调试窗   | `ui.show_binary`       | 模式0: 彩色掩码合成  模式1: 数字ROI二值化图  模式2: 黑色掩码 |
 | 串口 HEX 日志  | `-DCMAKE_BUILD_TYPE=Debug` | 每包 9 字节完整打印                          |
 
 ---
@@ -265,7 +269,7 @@ camera:
 | 串口发送失败   | `LOG_WARN` 提示，继续运行                   |
 | 空帧           | 返回 `nullopt`，调用方 sleep 1ms 后重试      |
 | 配置键缺失     | 立即 `exit(EXIT_FAILURE)` 并打印错误键名      |
-| 模式1 校验失败 | 丢弃整帧，不更新 Kalman，不发送              |
+| 模式1 匹配失败 | 丢弃整帧，不更新 Kalman，不发送              |
 
 ---
 
@@ -276,6 +280,7 @@ camera:
 ├── README.md                   # 本文件
 ├── .gitignore
 ├── 核心记忆.md                 # AI 对话快速恢复项目记忆
+├── templates/                 # 模式1 数字模板 num1/2/3.png（白底黑字）
 ├── config/
 │   └── vision.yaml             # 唯一配置来源
 ├── include/
@@ -288,13 +293,14 @@ camera:
 │   ├── ConfigManager.cpp       # 42 个 YAML 访问器
 │   ├── CameraCapture.cpp       # 异常安全读帧 + 断连重连
 │   ├── SerialPort.cpp          # 帧同步解析 + HEX 日志 + 波特率自适应
-│   └── VisionPipeline.cpp      # 模式0(HSV+轮廓) 模式1(轮廓法+三重校验) 模式2(minAreaRect) + Kalman
+│   └── VisionPipeline.cpp      # 模式0(HSV+轮廓) 模式1(Hu矩+matchShapes数字识别) 模式2(minAreaRect) + Kalman
 ├── tools/
 │   ├── Logger.h                # 双通道日志单例（控制台彩色 + 文件纯文本 flush）
 │   ├── FPSCounter.h            # 1 秒滑动窗帧率计算
 │   ├── ThreadSafeFrameBuffer.h # 模板单槽帧缓冲（覆盖旧帧）
 │   ├── ThreadSafeSendQueue.h   # 生产者-消费者队列 + DetectionResult 定义
-│   └── ColorOrder.h            # 6 色枚举 + 名称数组
+│   ├── ColorOrder.h            # 6 色枚举 + 名称数组
+│   └── capture_templates.py    # 模式1 数字模板制作工具（OpenCV Python）
 └── scripts/
     └── autostart.sh            # 唯一自启动脚本：开机注册 + 看门狗（start/stop/restart/status）
 ```

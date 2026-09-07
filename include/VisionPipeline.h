@@ -6,7 +6,7 @@
 //
 // process() 按当前模式分发：
 //   模式0  —  6 颜色物块检测
-//   模式1  —  3 圆环检测（轮廓法）
+//   模式1  —  单圆环数字识别（Hu矩 + matchShapes 模板匹配）
 //   模式2  —  黑色圆柱检测
 //   模式3  —  空闲（不检测、不发送）
 //
@@ -56,7 +56,7 @@ public:
     void resetKalman();
 
     /// 返回最近一次处理的二值化调试图像（供 main 中显示）。
-    /// 模式0：各颜色掩码合成图  模式1：梯度图  模式2：黑色掩码
+    /// 模式0：各颜色掩码合成图  模式1：数字ROI二值化图  模式2：黑色掩码
     cv::Mat getLastDebugImage() const;
 
 private:
@@ -82,6 +82,7 @@ private:
 
     // ---- 模式1 ---------------------------------------------------------
     std::vector<DetectionResult> processMode1(const cv::Mat& frame);
+    bool loadDigitTemplates();   // 加载 3 个数字模板轮廓（一次）
 
     // ---- 模式2 ---------------------------------------------------------
     std::vector<DetectionResult> processMode2(const cv::Mat& frame);
@@ -91,6 +92,10 @@ private:
     std::atomic<bool>     pending_kalman_reset_{false};
 
     std::unordered_map<int, KalmanTracker> kalman_trackers_;
+
+    // ---- 模式1 数字模板（懒加载一次）-----------------------------------
+    bool digit_templates_loaded_ = false;
+    std::vector<std::vector<cv::Point>> template_contours_;  // 数字 1/2/3 轮廓
 
     mutable std::mutex debug_image_mutex_;
     cv::Mat last_debug_image_;

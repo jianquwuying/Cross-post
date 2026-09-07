@@ -38,6 +38,10 @@ vision.log
 core
 core.*
 
+# Python（capture_templates.py）
+__pycache__/
+*.pyc
+
 # 临时文件
 tmp/
 temp/
