@@ -128,12 +128,12 @@ bool SerialPort::configurePort(int baudrate) {
 // ---------------------------------------------------------------------------
 // readCommand —— 非阻塞帧同步解析
 // ---------------------------------------------------------------------------
-// 协议：0xCD  0x01  MODE  0xDC
-// 搜寻 0xCD 起始字节；找到后读取后续 3 字节。
-// 帧有效则返回 MODE 字节。
+// 协议：0xCD  0x01  MODE  TARGET  0xDC
+// 搜寻 0xCD 起始字节；找到后读取后续 4 字节。
+// 帧有效则返回 {MODE, TARGET}。
 // 任何字节错误/缺失 → 重置并继续搜寻 0xCD。
 // ---------------------------------------------------------------------------
-std::optional<uint8_t> SerialPort::readCommand() {
+std::optional<SerialCommand> SerialPort::readCommand() {
     uint8_t byte;
 
     // 搜寻 0xCD 起始字节
@@ -148,11 +148,11 @@ std::optional<uint8_t> SerialPort::readCommand() {
         }
     }
 
-    // 读取后续 3 字节（0x01, MODE, 0xDC）
-    uint8_t buf[3];
+    // 读取后续 4 字节（0x01, MODE, TARGET, 0xDC）
+    uint8_t buf[4];
     size_t total = 0;
-    while (total < 3) {
-        ssize_t n = ::read(fd_, buf + total, 3 - total);
+    while (total < 4) {
+        ssize_t n = ::read(fd_, buf + total, 4 - total);
         if (n <= 0) {
             // 帧内超时/错误 → 丢弃
             return std::nullopt;
@@ -165,19 +165,28 @@ std::optional<uint8_t> SerialPort::readCommand() {
         LOG_DEBUG("串口 RX：期望 0x01，收到 0x%02X", buf[0]);
         return std::nullopt;
     }
-    if (buf[2] != 0xDC) {
-        LOG_DEBUG("串口 RX：期望 0xDC 结束符，收到 0x%02X", buf[2]);
+    if (buf[3] != 0xDC) {
+        LOG_DEBUG("串口 RX：期望 0xDC 结束符，收到 0x%02X", buf[3]);
         return std::nullopt;
     }
 
-    uint8_t mode = buf[1];
+    uint8_t mode   = buf[1];
+    uint8_t target = buf[2];
     if (mode > 3) {
         LOG_DEBUG("串口 RX：无效模式 %d", mode);
         return std::nullopt;
     }
+    if (target > 3) {
+        LOG_DEBUG("串口 RX：无效目标 %d", target);
+        return std::nullopt;
+    }
 
-    LOG_DEBUG("串口 RX：MODE%d", mode);
-    return mode;
+    LOG_DEBUG("串口 RX：MODE%d TARGET%d", mode, target);
+
+    SerialCommand cmd;
+    cmd.mode   = mode;
+    cmd.target = target;
+    return cmd;
 }
 
 // ---------------------------------------------------------------------------

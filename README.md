@@ -77,7 +77,7 @@ visionpost 崩溃后自动重启，连续快速崩溃超过 `MAX_RESTARTS` 次�
 CameraThread ──(单槽帧缓冲)──> ProcessThread ──(发送队列)──> SerialThread
       │                         │    │                          │
       └── 录制原始视频          │    └── 限频门控               /dev/ttyUSB0
-                              模式命令（atomic）──────────────────┘
+                              模式/目标命令（atomic）─────────────┘
 ```
 
 ### 三线程模型
@@ -94,7 +94,7 @@ CameraThread ──(单槽帧缓冲)──> ProcessThread ──(发送队列)�
 |----------------|-----------------|-----------------|-----------------------------------------|
 | 帧缓冲         | CameraThread    | ProcessThread   | `std::mutex` 单槽覆盖                    |
 | 发送队列       | ProcessThread   | SerialThread    | `std::mutex` + `std::condition_variable` |
-| 当前模式       | SerialThread    | ProcessThread   | `std::atomic<uint8_t>`                  |
+| 当前模式/目标  | SerialThread    | ProcessThread   | `std::atomic<uint8_t>` × 2               |
 | Kalman 映射表  | ProcessThread   | ProcessThread   | 单线程访问（模式切换延迟处理）             |
 | UART fd        | SerialThread 独享 | —             | ProcessThread **严禁**直接写串口         |
 | 调试图像       | ProcessThread   | ProcessThread   | `std::mutex`                            |
@@ -103,7 +103,7 @@ CameraThread ──(单槽帧缓冲)──> ProcessThread ──(发送队列)�
 
 ## 视觉模式
 
-远端主控通过串口发送 `MODE0`–`MODE3` 命令切换。模式切换时 Kalman 滤波器全部重置。
+远端主控通过串口发送 `MODE0`–`MODE3` + `TARGET` 切换。模式或目标变化时 Kalman 滤波器全部重置。
 
 ### 模式0 — 颜色物块检测
 
@@ -116,19 +116,31 @@ CameraThread ──(单槽帧缓冲)──> ProcessThread ──(发送队列)�
 - **颜色启用过滤**：`enabled_colors` 列表之外的整色跳过（不检测/不发送）；`color_id` 仍为全局 0-5 索引，屏蔽不重编号
 - 二值化调试窗：6 色掩码合成图（各色以 BGR 色彩渲染于黑底）
 
-### 模式1 — 单圆环数字识别（同心环剥除 + Hu矩 argmin）
+### 模式1 — 多圆环数字识别（同心环剥除 + Hu矩 argmin，TARGET 指定输出）
 
-目标视野内一次只能看到一个圆环。靶标实物为「**中心衬线数字 1/2/3 + 多层同心细环**」的印章式图案；摄像头固定在机械臂上可能旋转。识别原理：
+视野内可**同时出现多个圆环**，算法逐个识别数字编号，只输出串口命令中 `TARGET` 指定的那一个。靶标实物为「**中心衬线数字 1/2/3 + 多层同心细环**」的印章式图案；摄像头固定在机械臂上可能旋转。单环识别原理：
 
-1. 提取最大外环轮廓，得圆心与半径；
+1. 提取圆环外轮廓，得圆心与半径；
 2. 中心方形裁剪（半宽 = `digit_roi_scale × 半径`）；
 3. 数字区自适应二值化后，用**随半径缩放的开运算核**（`digit_open_ratio × 半径`）把同心细环剥掉、只留粗数字笔画 —— 环线宽度与靶标半径成比例，故开核也随半径缩放，远近通用；
 4. 取靠近圆心的最大墨块作为数字轮廓；
 5. `cv::matchShapes`（Hu 矩，旋转不变）与 3 个模板对比，**取三模板中最小者（argmin）** 判数字编号 —— 该字体绝对匹配分偏高且不稳，不做绝对阈值。
 
-- 无排序、无共线/半径校验 —— 单包输出
-- 成功 → `target_type=2`，`color_id=数字编号(1/2/3)`，`x/y=圆心质心`；任一阶段失败 → `return {}`，不更新 Kalman，不发送
-- 二值化调试窗：数字 ROI（剥环后）二值化图
+每帧的圆环处理顺序：
+
+```
+面积过滤(min_contour_area) → 按面积降序 → 候选数 > max_simultaneous_rings ?
+   ├─ 是 → 判定画面拥挤，整帧丢弃（不输出，Kalman 计一次丢失）
+   └─ 否 → 取前 max_rings_per_frame 个 → 逐环识别数字
+            → 单个环识别失败只跳过该环
+            → 同编号冲突（同编号出现两次）→ 整帧丢弃（Kalman 计一次丢失）
+            → 按 TARGET 筛选 → 命中则 Kalman 输出，未命中则不输出
+```
+
+- `TARGET=0`：圆环空闲，不检测、不输出（`max_rings_per_frame`/`max_simultaneous_rings` 均不参与）
+- 成功 → `target_type=2`，`color_id=TARGET 编号(1/2/3)`，`x/y=滤波后圆心`；Kalman key 用 TARGET 编号
+- 只对 TARGET 指定圆环做 Kalman 更新；其他圆环即使检出也不进滤波器
+- 二值化调试窗：所有已识别圆环的数字 ROI（剥环后）二值图，统一高度水平拼接；无有效数字时回退显示环级二值图
 
 数字模板（`templates/num1.png` / `num2.png` / `num3.png`）需为**正视角、纯白底黑字**的灰度图，程序首次进入模式1时自动加载一次。
 
@@ -158,7 +170,7 @@ python3 tools/capture_templates.py --image pic.jpg   # 从已有图片取图
 
 | 触发条件                       | 行为                                    |
 |-------------------------------|-----------------------------------------|
-| 模式切换（`current_mode` 变化）| **立即抢断发送**，重置计时器               |
+| 模式切换（`MODE` 或 `TARGET` 变化）| **立即抢断发送**，重置计时器            |
 | 距上次发送 ≥ `send_interval_ms`| 允许发送                                |
 | 无有效目标                     | 不发送，**不更新计时器**（目标重现立即发出）  |
 | 同一帧连续多包                  | 包间 `sleep(100µs)` 防粘包               |
@@ -185,11 +197,21 @@ kf.measurementNoiseCov  = cv::Mat::eye(2, 2, CV_32F) * yaml_scalar;
 
 ## 串口协议
 
-### 接收 — 模式命令（4 字节）
+### 接收 — 模式命令（5 字节）
 
 ```
-0xCD  0x01  MODE(0-3)  0xDC
+0xCD  0x01  MODE(0-3)  TARGET(0-3)  0xDC
 ```
+
+| 字节 | 字段     | 值                                                         |
+|------|----------|------------------------------------------------------------|
+| 0    | `0xCD`   | 帧头                                                        |
+| 1    | `0x01`   | 命令类型                                                     |
+| 2    | `MODE`   | 0=颜色物块  1=圆环  2=圆柱  3=空闲                             |
+| 3    | `TARGET` | 仅 `MODE=1` 有效：0=圆环空闲，1/2/3=指定输出的圆环编号；其他模式忽略 |
+| 4    | `0xDC`   | 帧尾                                                        |
+
+校验：第 1 字节为 `0x01`、`MODE ≤ 3`、`TARGET ≤ 3`、帧尾为 `0xDC`，任一不满足则丢弃该帧并继续搜寻 `0xCD`。
 
 ### 发送 — 检测结果（9 字节）
 
@@ -202,7 +224,7 @@ kf.measurementNoiseCov  = cv::Mat::eye(2, 2, CV_32F) * yaml_scalar;
 | 0    | `0xCD`      | 帧头                                                       |
 | 1    | `0x06`      | 数据类型                                                   |
 | 2    | TargetType  | 1=颜色物块  2=圆环  3=圆柱                                  |
-| 3    | Color       | 模式0：颜色索引(0=红,1=黄,2=蓝,3=绿,4=黑,5=青)；模式1：数字编号(1-3) |
+| 3    | Color       | 模式0：颜色索引(0=红,1=黄,2=蓝,3=绿,4=黑,5=青)；模式1：TARGET 编号(1-3) |
 | 4-5  | X           | `uint16_t` 大端序                                          |
 | 6-7  | Y           | `uint16_t` 大端序                                          |
 | 8    | `0xDC`      | 帧尾                                                       |
@@ -227,7 +249,7 @@ kf.measurementNoiseCov  = cv::Mat::eye(2, 2, CV_32F) * yaml_scalar;
 | `recording` | `record_mode`, `output_dir`, `fourcc`, `fps`                 |
 | `roi`       | `x`, `y`, `width`, `height`                                  |
 | `mode0`     | `min_contour_area`, `morph_kernel_size`, `enabled_colors`, 6 色 HSV 双区间 |
-| `mode1`     | `gaussian_kernel_size`, `adaptive_block_size`, `adaptive_c`, `min_contour_area`, `morph_open_kernel_size`, `digit_roi_scale`, `digit_open_ratio`, `invert_digit`, `template_paths` |
+| `mode1`     | `gaussian_kernel_size`, `adaptive_block_size`, `adaptive_c`, `min_contour_area`, `max_rings_per_frame`, `max_simultaneous_rings`, `morph_open_kernel_size`, `digit_roi_scale`, `digit_open_ratio`, `invert_digit`, `template_paths` |
 | `mode2`     | HSV 黑色阈值, `aspect_ratio_threshold`, `min_area`, `morph_kernel_size` |
 | `logging`   | `level`, `log_to_file`, `log_file_path`                       |
 
@@ -257,7 +279,7 @@ camera:
 |---------------|------------------------|----------------------------------------------|
 | 主窗口         | `ui.imshow_enable`     | OpenCV 窗口，含 FPS/延迟/模式/队列/串口状态     |
 | 叠加层         | `ui.ui_draw_enable`    | 目标位置圆圈+标签、ROI 矩形框                   |
-| 二值化调试窗   | `ui.show_binary`       | 模式0: 彩色掩码合成  模式1: 数字ROI二值化图  模式2: 黑色掩码 |
+| 二值化调试窗   | `ui.show_binary`       | 模式0: 彩色掩码合成  模式1: 各圆环数字ROI二值图（水平拼接）  模式2: 黑色掩码 |
 | 串口 HEX 日志  | `-DCMAKE_BUILD_TYPE=Debug` | 每包 9 字节完整打印                          |
 
 ---
@@ -270,7 +292,9 @@ camera:
 | 串口发送失败   | `LOG_WARN` 提示，继续运行                   |
 | 空帧           | 返回 `nullopt`，调用方 sleep 1ms 后重试      |
 | 配置键缺失     | 立即 `exit(EXIT_FAILURE)` 并打印错误键名      |
-| 模式1 匹配失败 | 丢弃整帧，不更新 Kalman，不发送              |
+| 模式1 单环识别失败 | 跳过该圆环，继续处理其他圆环                    |
+| 模式1 同编号冲突 / 画面拥挤 | 丢弃整帧，不发送，Kalman 计一次丢失      |
+| 模式1 TARGET 未检出 | 不发送，Kalman 计一次丢失                    |
 
 ---
 
@@ -294,7 +318,7 @@ camera:
 │   ├── ConfigManager.cpp       # 42 个 YAML 访问器
 │   ├── CameraCapture.cpp       # 异常安全读帧 + 断连重连
 │   ├── SerialPort.cpp          # 帧同步解析 + HEX 日志 + 波特率自适应
-│   └── VisionPipeline.cpp      # 模式0(HSV+轮廓) 模式1(Hu矩+matchShapes数字识别) 模式2(minAreaRect) + Kalman
+│   └── VisionPipeline.cpp      # 模式0(HSV+轮廓) 模式1(多圆环Hu矩+matchShapes) 模式2(minAreaRect) + Kalman
 ├── tools/
 │   ├── Logger.h                # 双通道日志单例（控制台彩色 + 文件纯文本 flush）
 │   ├── FPSCounter.h            # 1 秒滑动窗帧率计算

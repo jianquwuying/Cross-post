@@ -6,7 +6,7 @@
 //
 // process() 按当前模式分发：
 //   模式0  —  6 颜色物块检测
-//   模式1  —  单圆环数字识别（Hu矩 + matchShapes 模板匹配）
+//   模式1  —  多圆环数字识别（Hu矩 + matchShapes 模板匹配，TARGET 指定输出）
 //   模式2  —  黑色圆柱检测
 //   模式3  —  空闲（不检测、不发送）
 //
@@ -35,12 +35,16 @@ public:
     // 模式控制
     // -------------------------------------------------------------------
 
-    /// 设置当前模式（0–3）。由 SerialThread 调用。
-    /// 模式变化时，排队一次完整的 Kalman 重置。
-    void setMode(uint8_t mode);
+    /// 设置当前模式（0–3）与圆环目标编号（0–3）。由 SerialThread 调用。
+    /// MODE 或 TARGET 任一变化时，排队一次完整的 Kalman 重置。
+    /// TARGET 仅 MODE=1 时生效（0=圆环空闲，1/2/3=指定编号）。
+    void setMode(uint8_t mode, uint8_t target);
 
     /// 读取当前模式。由 ProcessThread 调用。
     uint8_t currentMode() const { return current_mode_.load(); }
+
+    /// 读取当前圆环目标编号。由 ProcessThread 调用。
+    uint8_t currentTarget() const { return current_target_.load(); }
 
     // -------------------------------------------------------------------
     // 帧处理
@@ -58,6 +62,18 @@ public:
     /// 返回最近一次处理的二值化调试图像（供 main 中显示）。
     /// 模式0：各颜色掩码合成图  模式1：数字ROI二值化图  模式2：黑色掩码
     cv::Mat getLastDebugImage() const;
+
+    // -------------------------------------------------------------------
+    // 模式1 检测到的圆环列表（供 UI 绘制所有圆环）
+    // -------------------------------------------------------------------
+    struct RingDetection {
+        uint8_t     digit_id;   // 识别出的数字编号 1/2/3
+        cv::Point2f center;     // 圆心（全图坐标）
+        float       radius;     // 外接圆半径（像素）
+    };
+
+    /// 返回最近一帧完成数字识别的圆环列表（拷贝）。由 ProcessThread 调用。
+    std::vector<RingDetection> getLastDetectedRings() const;
 
 private:
     // ---- 每个目标的 Kalman 跟踪器 ------------------------------------
@@ -84,11 +100,26 @@ private:
     std::vector<DetectionResult> processMode1(const cv::Mat& frame);
     bool loadDigitTemplates();   // 加载 3 个数字模板轮廓（一次）
 
+    /// 对单个圆环轮廓做数字识别（剥同心细环 + Hu矩 argmin）。
+    /// 成功返回 true，并填充 digit_id(1-3) / center(全图坐标) /
+    /// radius / digit_binary(剥环后的数字 ROI 二值图)；
+    /// 任一阶段失败返回 false，调用方跳过该圆环。
+    bool recognizeRingDigit(const cv::Mat& blurred,
+                            const cv::Rect& roi_rect,
+                            const std::vector<cv::Point>& ring_contour,
+                            uint8_t& digit_id,
+                            cv::Point2f& center,
+                            float& radius,
+                            cv::Mat& digit_binary) const;
+
+    void setLastDetectedRings(const std::vector<RingDetection>& rings);
+
     // ---- 模式2 ---------------------------------------------------------
     std::vector<DetectionResult> processMode2(const cv::Mat& frame);
 
     // ---- 状态 ----------------------------------------------------------
     std::atomic<uint8_t>  current_mode_{3};          // 默认 = 空闲
+    std::atomic<uint8_t>  current_target_{0};        // 默认 = 圆环空闲
     std::atomic<bool>     pending_kalman_reset_{false};
 
     std::unordered_map<int, KalmanTracker> kalman_trackers_;
@@ -96,6 +127,10 @@ private:
     // ---- 模式1 数字模板（懒加载一次）-----------------------------------
     bool digit_templates_loaded_ = false;
     std::vector<std::vector<cv::Point>> template_contours_;  // 数字 1/2/3 轮廓
+
+    // ---- 模式1 最近一帧检测到的圆环（供 UI 绘制）------------------------
+    mutable std::mutex rings_mutex_;
+    std::vector<RingDetection> last_rings_;
 
     mutable std::mutex debug_image_mutex_;
     cv::Mat last_debug_image_;
