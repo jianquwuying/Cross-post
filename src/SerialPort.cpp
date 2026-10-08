@@ -214,6 +214,10 @@ bool SerialPort::writeResult(uint8_t target_type, uint8_t color,
               buf[0], buf[1], buf[2], buf[3], buf[4],
               buf[5], buf[6], buf[7], buf[8]);
 
+    if (target_type == 0) {
+        LOG_DEBUG("串口发送: 无目标帧 (Color=%d)", color);
+    }
+
     // 非阻塞检查：fd 是否可写？
     fd_set write_fds;
     FD_ZERO(&write_fds);

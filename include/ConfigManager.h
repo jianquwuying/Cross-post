@@ -60,6 +60,12 @@ public:
     int         serialBaudrate()          const;
     int         serialSendIntervalMs()    const;
 
+    /// 无目标帧开关（`serial.enable_no_target_frame`）。
+    /// true  = 无有效目标时发送 TargetType=0 无目标帧；Kalman 未超时期间
+    ///         发送预测坐标（target_type 保持 1/2/3）
+    /// false = 完全回退：无目标不发送，也未发预测坐标
+    bool        serialEnableNoTargetFrame() const;
+
     // -------------------------------------------------------------------
     // ROI 感兴趣区域
     // -------------------------------------------------------------------

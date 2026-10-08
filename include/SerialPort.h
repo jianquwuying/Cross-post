@@ -48,6 +48,8 @@ public:
 
     /// 向串口写入检测结果（非阻塞）。
     /// 协议：0xCD  0x06  TargetType  Color  X_H  X_L  Y_H  Y_L  0xDC
+    /// TargetType：1=颜色物块 2=圆环 3=圆柱；0=无目标帧（X=Y=0，
+    ///             Color 标识丢失的目标 ID），由 serial.enable_no_target_frame 控制。
     /// 全部 9 字节写入成功返回 true。
     bool writeResult(uint8_t target_type, uint8_t color,
                      uint16_t x, uint16_t y);

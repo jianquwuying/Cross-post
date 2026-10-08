@@ -207,7 +207,8 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
             // 间隔已到：允许发送
             should_send = true;
         }
-        // 无有效目标 → 不发送，不更新计时器（保证目标出现时立即发送）
+        // 无结果（仅 serial.enable_no_target_frame=false 时可能出现）
+        // → 不发送，不更新计时器（保证目标出现时立即发送）
 
         if (should_send) {
             for (const auto& r : results) {
@@ -265,8 +266,9 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
                                 0.5, ring_color, 1);
                 }
 
-                // 绘制检测结果
+                // 绘制检测结果（跳过 target_type=0 的无目标帧，避免在 (0,0) 画圈）
                 for (const auto& r : results) {
+                    if (r.target_type == 0) continue;
                     cv::Point pt(r.x, r.y);
                     // 圆环（target_type=2）= 红色，与 TARGET 圈一致；
                     // 其余类型保持黄色

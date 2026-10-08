@@ -90,6 +90,18 @@ private:
     cv::Point2f predictAndUpdate(int key, const cv::Point2f& measurement,
                                  bool detected);
 
+    /// 模式0/1/2 未检出目标时的统一处理（受 serial.enable_no_target_frame 控制）：
+    ///   · 开关关闭       → 不推任何结果（完全回退到"无目标不发送"）
+    ///   · 跟踪器已初始化 → 推送 Kalman 预测坐标（target_type 保持 detected_type），
+    ///                      保证主控侧坐标连续；这是外推值、会随时间漂移，
+    ///                      主控应结合时间窗口判断可信度
+    ///   · 跟踪器未初始化 → 推送无目标帧 {target_type=0, color_id, x=0, y=0}
+    ///                      （含"冷启动从未捕获"与"超时复位"两种情况）
+    void pushLostOrNoTarget(std::vector<DetectionResult>& results,
+                            int key, uint8_t detected_type, uint8_t color_id,
+                            const cv::Point2f& predicted,
+                            int frame_cols, int frame_rows);
+
     // ---- 模式0 ---------------------------------------------------------
     std::vector<DetectionResult> processMode0(const cv::Mat& frame);
     void applyHSVMask(const cv::Mat& hsv,

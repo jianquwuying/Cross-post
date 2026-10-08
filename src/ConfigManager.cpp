@@ -122,6 +122,9 @@ int ConfigManager::serialBaudrate() const {
 int ConfigManager::serialSendIntervalMs() const {
     return getRequired<int>(config_["serial"], "send_interval_ms");
 }
+bool ConfigManager::serialEnableNoTargetFrame() const {
+    return getRequired<bool>(config_["serial"], "enable_no_target_frame");
+}
 
 // ---------------------------------------------------------------------------
 // ROI

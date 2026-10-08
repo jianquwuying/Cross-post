@@ -198,7 +198,8 @@ python3 tools/capture_templates.py --image pic.jpg   # 从已有图片取图
 
 ### 模式3 — 空闲
 
-继续采集，不检测，不发送。
+继续采集，不检测。`serial.enable_no_target_frame` 开启时按 `send_interval_ms`
+周期发送无目标帧（`TargetType=0`，`Color=0`）作为心跳；关闭时不发送。
 
 ---
 
@@ -210,7 +211,8 @@ python3 tools/capture_templates.py --image pic.jpg   # 从已有图片取图
 |-------------------------------|-----------------------------------------|
 | 模式切换（`MODE` 或 `TARGET` 变化）| **立即抢断发送**，重置计时器            |
 | 距上次发送 ≥ `send_interval_ms`| 允许发送                                |
-| 无有效目标                     | 不发送，**不更新计时器**（目标重现立即发出）  |
+| 无有效目标                     | 开启 `serial.enable_no_target_frame` 时发送**无目标帧**（`TargetType=0`）并按周期推送；关闭时什么都不发 |
+| 目标短暂丢失（Kalman 未超时）  | 发送 **Kalman 预测坐标**（`TargetType` 仍为 1/2/3），保证坐标连续；超时复位后才转无目标帧 |
 | 同一帧连续多包                  | 包间 `sleep(100µs)` 防粘包               |
 
 ---
@@ -261,12 +263,16 @@ kf.measurementNoiseCov  = cv::Mat::eye(2, 2, CV_32F) * yaml_scalar;
 |------|-------------|-----------------------------------------------------------|
 | 0    | `0xCD`      | 帧头                                                       |
 | 1    | `0x06`      | 数据类型                                                   |
-| 2    | TargetType  | 1=颜色物块  2=圆环  3=圆柱                                  |
-| 3    | Color       | 模式0：颜色索引(0=红,1=黄,2=蓝,3=绿,4=黑,5=青)；模式1：TARGET 编号(1-3) |
+| 2    | TargetType  | 0=**无目标帧**  1=颜色物块  2=圆环  3=圆柱                    |
+| 3    | Color       | 有目标时：模式0=颜色索引(0=红,1=黄,2=蓝,3=绿,4=黑,5=青)，模式1=TARGET 编号(1-3)；<br>无目标帧(0)时：模式0=丢失的颜色索引，模式1=丢失的 TARGET 编号（TARGET=0 时为 0），模式2/3=0 |
 | 4-5  | X           | `uint16_t` 大端序                                          |
 | 6-7  | Y           | `uint16_t` 大端序                                          |
 | 8    | `0xDC`      | 帧尾                                                       |
 
+- **无目标帧**：`X=Y=0`，`Color` 标识是哪个目标丢失；由 `serial.enable_no_target_frame`
+  控制（默认 `true`），用于让主控区分"视觉系统挂了"与"当前视野确实没目标"。
+  置 `false` 则完全回退（无目标不发、也不发预测坐标）
+- 模式0 按**启用颜色逐色独立推送**，主控需按 `Color` 分别处理
 - 接收端帧同步解析：搜寻 `0xCD` 后读固定长度，无效自动跳过
 - Debug 模式输出完整 HEX 日志
 
@@ -282,7 +288,7 @@ kf.measurementNoiseCov  = cv::Mat::eye(2, 2, CV_32F) * yaml_scalar;
 |-------------|-------------------------------------------------------------|
 | `camera`    | `index`, `video_path`, `width`, `height`, `fps`             |
 | `ui`        | `imshow_enable`, `ui_draw_enable`, `show_binary`, `window_name` |
-| `serial`    | `port`, `baudrate`, `send_interval_ms`                      |
+| `serial`    | `port`, `baudrate`, `send_interval_ms`, `enable_no_target_frame` |
 | `kalman`    | `process_noise_cov`, `measurement_noise_cov`, `init_frames`, `lost_frame_limit` |
 | `recording` | `record_mode`, `output_dir`, `fourcc`, `fps`                 |
 | `roi`       | `x`, `y`, `width`, `height`                                  |

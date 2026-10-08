@@ -155,6 +155,51 @@ cv::Point2f VisionPipeline::predictAndUpdate(int key,
 }
 
 // ========================================================================
+// 未检出目标时的统一处理（无目标帧 / 预测坐标）
+// ========================================================================
+// 供模式0/1/2 在"本帧未检出目标"时调用：
+//   · 开关关闭       → 不推任何结果（完全回退到"无目标不发送"）
+//   · 跟踪器已初始化 → 推送 Kalman 预测坐标（target_type 保持 detected_type），
+//                      保证主控侧坐标连续；这是外推值、会随时间漂移，
+//                      主控应结合时间窗口判断可信度
+//   · 跟踪器未初始化 → 推送无目标帧 {target_type=0, color_id, x=0, y=0}
+//                      （含"冷启动从未捕获"与"超时复位"两种情况）
+// ========================================================================
+void VisionPipeline::pushLostOrNoTarget(std::vector<DetectionResult>& results,
+                                        int key, uint8_t detected_type,
+                                        uint8_t color_id,
+                                        const cv::Point2f& predicted,
+                                        int frame_cols, int frame_rows) {
+    auto& cfg = ConfigManager::instance();
+
+    if (!cfg.serialEnableNoTargetFrame()) {
+        return;   // 开关关闭：完全回退，什么都不推
+    }
+
+    DetectionResult dr;
+    dr.color_id = color_id;
+
+    if (kalman_trackers_[key].initialized) {
+        // 短暂丢失（Kalman 未超时）→ 推预测坐标，保持坐标连续性
+        cv::Point2f p = predicted;
+        p.x = std::max(0.0f, std::min(p.x,
+                          static_cast<float>(frame_cols - 1)));
+        p.y = std::max(0.0f, std::min(p.y,
+                          static_cast<float>(frame_rows - 1)));
+        dr.target_type = detected_type;
+        dr.x           = static_cast<uint16_t>(p.x);
+        dr.y           = static_cast<uint16_t>(p.y);
+    } else {
+        // 冷启动从未捕获 / 超时复位 → 无目标帧
+        dr.target_type = 0;
+        dr.x           = 0;
+        dr.y           = 0;
+    }
+
+    results.push_back(dr);
+}
+
+// ========================================================================
 // 调试图像存取
 // ========================================================================
 void VisionPipeline::setDebugImage(const cv::Mat& img) {
@@ -198,7 +243,18 @@ std::vector<DetectionResult> VisionPipeline::process(const cv::Mat& frame) {
         case 0:  return processMode0(frame);
         case 1:  return processMode1(frame);
         case 2:  return processMode2(frame);
-        case 3:  // 空闲 —— 返回空
+        case 3: {   // 空闲：不检测、无跟踪目标
+            std::vector<DetectionResult> results;
+            if (ConfigManager::instance().serialEnableNoTargetFrame()) {
+                DetectionResult dr;      // 无目标帧（Color=0）
+                dr.target_type = 0;
+                dr.color_id    = 0;
+                dr.x           = 0;
+                dr.y           = 0;
+                results.push_back(dr);
+            }
+            return results;
+        }
         default: return {};
     }
 }
@@ -298,8 +354,11 @@ std::vector<DetectionResult> VisionPipeline::processMode0(
                          cv::CHAIN_APPROX_SIMPLE);
 
         if (contours.empty()) {
-            // 该颜色无检测 → 仅 Kalman 预测
-            predictAndUpdate(c, cv::Point2f(0, 0), false);
+            // 该颜色无检测 → Kalman 预测；未初始化则发无目标帧
+            const cv::Point2f pred =
+                predictAndUpdate(c, cv::Point2f(0, 0), false);
+            pushLostOrNoTarget(results, c, 1, static_cast<uint8_t>(c), pred,
+                               frame.cols, frame.rows);
             continue;
         }
 
@@ -313,14 +372,20 @@ std::vector<DetectionResult> VisionPipeline::processMode0(
 
         double area = cv::contourArea(*largest);
         if (area < min_area) {
-            predictAndUpdate(c, cv::Point2f(0, 0), false);
+            const cv::Point2f pred =
+                predictAndUpdate(c, cv::Point2f(0, 0), false);
+            pushLostOrNoTarget(results, c, 1, static_cast<uint8_t>(c), pred,
+                               frame.cols, frame.rows);
             continue;
         }
 
         // 计算质心
         auto moments = cv::moments(*largest);
         if (std::abs(moments.m00) < 1e-6) {
-            predictAndUpdate(c, cv::Point2f(0, 0), false);
+            const cv::Point2f pred =
+                predictAndUpdate(c, cv::Point2f(0, 0), false);
+            pushLostOrNoTarget(results, c, 1, static_cast<uint8_t>(c), pred,
+                               frame.cols, frame.rows);
             continue;
         }
 
@@ -382,9 +447,17 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
 
     const uint8_t target = current_target_.load();
 
-    // ---- TARGET=0：圆环空闲，不检测、不输出 ---------------------------
+    // ---- TARGET=0：圆环空闲，不检测 ------------------------------------
     if (target == 0) {
         setLastDetectedRings({});
+        if (cfg.serialEnableNoTargetFrame()) {
+            DetectionResult dr;      // 无目标帧（Color=0）
+            dr.target_type = 0;
+            dr.color_id    = 0;
+            dr.x           = 0;
+            dr.y           = 0;
+            results.push_back(dr);
+        }
         return results;
     }
 
@@ -513,7 +586,12 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
     }
     if (area_filtered.empty()) {
         setLastDetectedRings({});
-        return results;   // 无满足面积阈值的圆环
+        // 无满足面积阈值的圆环 → 推进 Kalman（未超时发预测坐标，超时发无目标帧）
+        const cv::Point2f pred =
+            predictAndUpdate(target, cv::Point2f(0, 0), false);
+        pushLostOrNoTarget(results, target, 2, target, pred,
+                           frame.cols, frame.rows);
+        return results;
     }
 
     // ---- 按面积从大到小排序（保证外环先进入保留列表）--------------------
@@ -588,6 +666,11 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
 
     if (valid_contours.empty()) {
         setLastDetectedRings({});
+        // 全部候选都被形状过滤掉 → 同上
+        const cv::Point2f pred =
+            predictAndUpdate(target, cv::Point2f(0, 0), false);
+        pushLostOrNoTarget(results, target, 2, target, pred,
+                           frame.cols, frame.rows);
         return results;
     }
 
@@ -650,7 +733,10 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
 
     if (rings.empty()) {
         // 所有候选数字识别均失败 → 等效未检出
-        predictAndUpdate(target, cv::Point2f(0, 0), false);
+        const cv::Point2f pred =
+            predictAndUpdate(target, cv::Point2f(0, 0), false);
+        pushLostOrNoTarget(results, target, 2, target, pred,
+                           frame.cols, frame.rows);
         return results;
     }
 
@@ -660,7 +746,10 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
             if (rings[i].digit_id == rings[j].digit_id) {
                 LOG_WARN("模式1：检测到重复数字编号 %d，丢弃本帧",
                          rings[i].digit_id);
-                predictAndUpdate(target, cv::Point2f(0, 0), false);
+                const cv::Point2f pred =
+                    predictAndUpdate(target, cv::Point2f(0, 0), false);
+                pushLostOrNoTarget(results, target, 2, target, pred,
+                                   frame.cols, frame.rows);
                 return results;
             }
         }
@@ -675,8 +764,11 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
         }
     }
     if (!hit) {
-        // TARGET 指定圆环未检出 → 不输出、不发送，推进 Kalman 丢失计数
-        predictAndUpdate(target, cv::Point2f(0, 0), false);
+        // TARGET 指定圆环未检出 → 推进 Kalman；未超时发预测坐标，超时发无目标帧
+        const cv::Point2f pred =
+            predictAndUpdate(target, cv::Point2f(0, 0), false);
+        pushLostOrNoTarget(results, target, 2, target, pred,
+                           frame.cols, frame.rows);
         return results;
     }
 
@@ -932,7 +1024,9 @@ std::vector<DetectionResult> VisionPipeline::processMode2(
                      cv::CHAIN_APPROX_SIMPLE);
 
     if (contours.empty()) {
-        predictAndUpdate(0, cv::Point2f(0, 0), false);
+        const cv::Point2f pred =
+            predictAndUpdate(0, cv::Point2f(0, 0), false);
+        pushLostOrNoTarget(results, 0, 3, 0, pred, frame.cols, frame.rows);
         return results;
     }
 
@@ -963,7 +1057,9 @@ std::vector<DetectionResult> VisionPipeline::processMode2(
 
     if (best_center.x < 0) {
         // 未找到有效圆柱
-        predictAndUpdate(0, cv::Point2f(0, 0), false);
+        const cv::Point2f pred =
+            predictAndUpdate(0, cv::Point2f(0, 0), false);
+        pushLostOrNoTarget(results, 0, 3, 0, pred, frame.cols, frame.rows);
         return results;
     }
 
