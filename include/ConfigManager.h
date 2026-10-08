@@ -107,7 +107,6 @@ public:
     double mode1DigitOpenRatio()       const;   // 数字区剥环开运算核 / 圆环半径
     bool   mode1InvertDigit()          const;   // 数字二值化是否反色
     int    mode1MaxRingsPerFrame()     const;   // 每帧最多做数字识别的圆环数
-    int    mode1MaxSimultaneousRings() const;   // 视野内允许同时出现的圆环数上限
     std::string mode1TemplatePath(int digit_id) const;  // digit_id ∈ {1,2,3}
 
     // -------------------------------------------------------------------

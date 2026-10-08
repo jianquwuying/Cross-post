@@ -243,9 +243,6 @@ bool ConfigManager::mode1InvertDigit() const {
 int ConfigManager::mode1MaxRingsPerFrame() const {
     return getRequired<int>(config_["mode1"], "max_rings_per_frame");
 }
-int ConfigManager::mode1MaxSimultaneousRings() const {
-    return getRequired<int>(config_["mode1"], "max_simultaneous_rings");
-}
 std::string ConfigManager::mode1TemplatePath(int digit_id) const {
     // 模板路径的键是整数 1/2/3（YAML 中未加引号），不能用字符串 getRequired
     auto node = config_["mode1"]["template_paths"];

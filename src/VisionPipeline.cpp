@@ -357,7 +357,7 @@ std::vector<DetectionResult> VisionPipeline::processMode0(
 // ========================================================================
 // 流水线：ROI → Gray → GaussianBlur → adaptiveThreshold →
 //          MORPH_OPEN → findContours(RETR_EXTERNAL) → 面积过滤 → 按面积降序 →
-//          拥挤判定(max_simultaneous_rings) → 取前 max_rings_per_frame 个 →
+//          嵌套去重(包围盒包含 + 圆心距) → 取前 max_rings_per_frame 个 →
 //          逐环：moments 圆心 + minEnclosingCircle 半径 → 中心方形数字 ROI →
 //          数字自适应二值化 → 开运算剥同心细环(核∝半径) →
 //          取靠近圆心的最大墨块 → cv::matchShapes 与 3 模板对比(argmin) →
@@ -365,6 +365,8 @@ std::vector<DetectionResult> VisionPipeline::processMode0(
 //
 // **关键特性**：
 //   - 视野内可同时出现多个圆环，各自识别数字编号
+//   - 同一物理靶标的同心环是断开的独立轮廓 → 嵌套去重后只留最大外环，
+//     保证「一个物理靶标 = 一个候选」，不会误触发丢帧
 //   - 仅输出 TARGET 指定编号的圆环；TARGET=0 时圆环空闲（不检测、不输出）
 //   - 靶标为"中心数字 + 多层同心细环"；开核按半径缩放，距离无关地剥环
 //   - Hu 矩天然旋转不变，机械臂旋转下无需任何旋转模板
@@ -435,52 +437,109 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
     // 真实反映"静止时圆环是否断裂/消失"，便于现场定位（数字路径随后覆盖）
     setDebugImage(binary);
 
-    // ---- 提取所有候选圆环轮廓（面积 ≥ min_contour_area）----------------
+    // ---- 提取所有圆环轮廓（面积 ≥ min_contour_area）--------------------
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(binary, contours,
                      cv::RETR_EXTERNAL,
                      cv::CHAIN_APPROX_SIMPLE);
 
     const double min_area = static_cast<double>(cfg.mode1MinContourArea());
-    std::vector<const std::vector<cv::Point>*> candidates;
+    std::vector<const std::vector<cv::Point>*> area_filtered;
     for (const auto& c : contours) {
         if (cv::contourArea(c) >= min_area) {
-            candidates.push_back(&c);
+            area_filtered.push_back(&c);
         }
     }
-    if (candidates.empty()) {
+    if (area_filtered.empty()) {
         setLastDetectedRings({});
         return results;   // 无满足面积阈值的圆环
     }
 
-    // ---- 按面积从大到小排序 -------------------------------------------
-    std::sort(candidates.begin(), candidates.end(),
+    // ---- 按面积从大到小排序（保证外环先进入保留列表）--------------------
+    std::sort(area_filtered.begin(), area_filtered.end(),
               [](const std::vector<cv::Point>* a,
                  const std::vector<cv::Point>* b) {
                   return cv::contourArea(*a) > cv::contourArea(*b);
               });
 
-    // ---- 拥挤判定：候选数超过视野允许上限 → 整帧丢弃 --------------------
-    const int max_simultaneous = cfg.mode1MaxSimultaneousRings();
-    if (static_cast<int>(candidates.size()) > max_simultaneous) {
-        LOG_WARN("模式1：候选圆环 %zu 个 > 上限 %d，判定画面拥挤，丢弃本帧",
-                 candidates.size(), max_simultaneous);
+    // ---- 嵌套去重：同一物理靶标的同心环只保留最大外环 -------------------
+    // 真机上同心圆环二值化后是断开的独立轮廓，一个物理靶标会产生多个候选
+    // （外环/中环/内环），必须去重，否则 TARGET 筛选会拿错环。
+    // 判定"c 是 v 的嵌套碎片"需**同时**满足：
+    //   ① c 的包围盒被 v 的包围盒包含（坐标比较带 2px 容差；
+    //      不用 Rect::contains(rect.br()) —— OpenCV 的 br() 是排他坐标，
+    //      边界正好重合时会漏判）
+    //   ② 两轮廓圆心距 < 0.5 × v 的半径（同心环圆心几乎重合；两个独立
+    //      靶标即使包围盒嵌套，圆心距也远大于此，不会被误合并）
+    constexpr double kNestedRectTolerancePx = 2.0;
+    constexpr double kNestedCenterRatio     = 0.5;
+
+    std::vector<const std::vector<cv::Point>*> valid_contours;
+    for (const auto* c : area_filtered) {
+        const cv::Rect rect_inner = cv::boundingRect(*c);
+
+        auto m_inner = cv::moments(*c);
+        if (std::abs(m_inner.m00) < 1e-6) {
+            continue;
+        }
+        const cv::Point2f center_inner(
+            static_cast<float>(m_inner.m10 / m_inner.m00),
+            static_cast<float>(m_inner.m01 / m_inner.m00));
+
+        bool nested = false;
+        for (const auto* v : valid_contours) {
+            const cv::Rect rect_outer = cv::boundingRect(*v);
+            const bool box_contained =
+                rect_inner.x >= rect_outer.x - kNestedRectTolerancePx &&
+                rect_inner.y >= rect_outer.y - kNestedRectTolerancePx &&
+                rect_inner.x + rect_inner.width <=
+                    rect_outer.x + rect_outer.width + kNestedRectTolerancePx &&
+                rect_inner.y + rect_inner.height <=
+                    rect_outer.y + rect_outer.height + kNestedRectTolerancePx;
+            if (!box_contained) {
+                continue;
+            }
+
+            auto m_outer = cv::moments(*v);
+            if (std::abs(m_outer.m00) < 1e-6) {
+                continue;
+            }
+            const cv::Point2f center_outer(
+                static_cast<float>(m_outer.m10 / m_outer.m00),
+                static_cast<float>(m_outer.m01 / m_outer.m00));
+
+            cv::Point2f circle_center;
+            float radius_outer = 0.0f;
+            cv::minEnclosingCircle(*v, circle_center, radius_outer);
+
+            const float dist = cv::norm(center_inner - center_outer);
+            if (dist < kNestedCenterRatio * radius_outer) {
+                LOG_DEBUG("模式1: 轮廓嵌套去重丢弃 (面积: %.0f, 圆心距: %.1f)",
+                          cv::contourArea(*c), dist);
+                nested = true;
+                break;
+            }
+        }
+        if (!nested) {
+            valid_contours.push_back(c);
+        }
+    }
+
+    if (valid_contours.empty()) {
         setLastDetectedRings({});
-        // 该帧测量不可信 —— 等效未检出，推进 Kalman 丢失计数
-        predictAndUpdate(target, cv::Point2f(0, 0), false);
         return results;
     }
 
     // ---- 性能上限：每帧最多处理 max_rings_per_frame 个（取面积最大者）----
     const int max_per_frame = cfg.mode1MaxRingsPerFrame();
-    if (static_cast<int>(candidates.size()) > max_per_frame) {
-        candidates.resize(static_cast<size_t>(max_per_frame));
+    if (static_cast<int>(valid_contours.size()) > max_per_frame) {
+        valid_contours.resize(static_cast<size_t>(max_per_frame));
     }
 
     // ---- 逐候选圆环识别数字（单个失败只跳过该环，不影响其他环）----------
     std::vector<RingDetection> rings;
     std::vector<cv::Mat> digit_tiles;
-    for (const auto* rc : candidates) {
+    for (const auto* rc : valid_contours) {
         uint8_t     digit_id = 0;
         cv::Point2f center;
         float       radius = 0.0f;

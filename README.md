@@ -52,21 +52,45 @@ make -j4
 ../scripts/autostart.sh              # = start：前台监管，崩溃自动拉起，Ctrl+C 整体退出
 ../scripts/autostart.sh stop         # 优雅停止
 ../scripts/autostart.sh status       # 查看运行状态
+../scripts/autostart.sh doctor       # 环境自检（可执行文件/串口/摄像头/权限）
 ```
 
 按 `Ctrl+C` 发送 SIGINT 优雅退出。
 
 ## 开机自启动（看门狗）
 
-在桌面「启动应用程序」添加启动项，命令粘贴（会自动弹出终端实时显示看门狗日志）：
+在桌面「启动应用程序」添加启动项，「命令」一栏填写（**必须写绝对路径**）：
 
 ```bash
-gnome-terminal --title="Visionpost 看门狗" -- bash /home/shu/Cross-post/scripts/autostart.sh
+/home/pi/Cross-post/scripts/autostart-gui.sh
 ```
 
-`autostart.sh` 同时承担启动/看门狗/停止/状态查询（`start|stop|restart|status`）：
-visionpost 崩溃后自动重启，连续快速崩溃超过 `MAX_RESTARTS` 次（默认 10）则放弃并保持终端提示；
-串口权限通过 `echo <密码> | sudo -S chmod 666 /dev/ttyACM0` 自动放权（密码在脚本头部 `SUDO_PASS` 修改）。
+本机已配置好该启动项：`~/.config/autostart/gnome-terminal.desktop`（含 `X-GNOME-Autostart-Delay=10`）。
+
+> ⚠️ **`.desktop` 的 `Exec` 不经过 shell**，`$HOME`、`~`、环境变量都不会被展开；
+> 写成 `$HOME/Cross-post/...` 会被 `desktop-file-validate` 判为非法
+> （`reserved character '$' outside of a quote`），自启动项**根本不会执行**。
+> 可用 `desktop-file-validate ~/.config/autostart/*.desktop` 自查。
+
+`autostart-gui.sh` 是自启动入口，解决"登录初期终端起不来"的问题：
+
+- 优先弹终端窗口跑看门狗（方便现场看日志），最多重试 3 次
+- 登录初期 `gnome-terminal-server` / D-Bus 未就绪时，`gnome-terminal` 会报
+  `Error constructing proxy for org.gnome.Terminal ... 已到超时限制` 并以退出码 1 失败，
+  **此时终端不会弹出、看门狗也就不会启动**（这是本机曾出现过的故障）
+- 重试仍失败则退化为**后台无窗口运行**，保证机器人一定跑起来；结果记在 `record/autostart-gui.log`
+
+`autostart.sh` 同时承担启动/看门狗/停止/状态查询/环境自检（`start|stop|restart|status|doctor`）：
+
+- visionpost 崩溃后自动重启；连续快速崩溃超过 `MAX_RESTARTS` 次（默认 10）则放弃并保持终端提示
+- **硬件未就绪**（开机时摄像头/串口尚未枚举完）改走长间隔重试（`HW_RETRY_SEC`，默认 5s），
+  **不消耗快速崩溃额度**，避免开机慢导致看门狗提前放弃
+- 程序 stdout/stderr 同时显示在终端并写入 `record/visionpost.out.log`；
+  快速崩溃时把最后几行输出写进看门狗日志，便于定位原因
+- 串口放权对象自动识别：先取 `config/vision.yaml` 的 `serial.port`，再扫描
+  `/dev/ttyACM*`、`/dev/ttyUSB*`、`/dev/ttyCH341USB*`（本机用 USB 转串口 `/dev/ttyACM0`，不用板载 UART）；
+  先试免密 `sudo -n`，失败再回退密码管道（`SUDO_PASS`，本机为 1，可用 `AUTOSTART_SUDO_PASS` 覆盖）
+- `bash scripts/autostart.sh doctor` 一键自检：可执行文件 / 配置 / 串口及权限 / 摄像头 / sudo
 
 
 ---
@@ -129,15 +153,19 @@ CameraThread ──(单槽帧缓冲)──> ProcessThread ──(发送队列)�
 每帧的圆环处理顺序：
 
 ```
-面积过滤(min_contour_area) → 按面积降序 → 候选数 > max_simultaneous_rings ?
-   ├─ 是 → 判定画面拥挤，整帧丢弃（不输出，Kalman 计一次丢失）
-   └─ 否 → 取前 max_rings_per_frame 个 → 逐环识别数字
-            → 单个环识别失败只跳过该环
-            → 同编号冲突（同编号出现两次）→ 整帧丢弃（Kalman 计一次丢失）
-            → 按 TARGET 筛选 → 命中则 Kalman 输出，未命中则不输出
+面积过滤(min_contour_area) → 按面积降序 → 嵌套去重（同心环只保留最大外环）
+   → 取前 max_rings_per_frame 个 → 逐环识别数字
+      → 单个环识别失败只跳过该环
+      → 同编号冲突（同编号出现两次）→ 整帧丢弃（Kalman 计一次丢失）
+      → 按 TARGET 筛选 → 命中则 Kalman 输出，未命中则不输出
 ```
 
-- `TARGET=0`：圆环空闲，不检测、不输出（`max_rings_per_frame`/`max_simultaneous_rings` 均不参与）
+- **嵌套去重**：真机上同心圆环二值化后是**断开的独立轮廓**（外环/中环/内环各一个），
+  判定"当前轮廓是已保留轮廓的嵌套碎片"需**同时**满足
+  ① 包围盒被包含（坐标比较带 2px 容差）② 两轮廓圆心距 < `0.5 × 外环半径`；
+  丢弃前者、只留最大外环 —— 保证「一个物理靶标 = 一个候选」。
+  加上圆心校验是为了避免两个独立靶标在画面上重叠时被误合并（那会直接导致 TARGET 找不到环）
+- `TARGET=0`：圆环空闲，不检测、不输出（`max_rings_per_frame` 不参与）
 - 成功 → `target_type=2`，`color_id=TARGET 编号(1/2/3)`，`x/y=滤波后圆心`；Kalman key 用 TARGET 编号
 - 只对 TARGET 指定圆环做 Kalman 更新；其他圆环即使检出也不进滤波器
 - 二值化调试窗：所有已识别圆环的数字 ROI（剥环后）二值图，统一高度水平拼接；无有效数字时回退显示环级二值图
@@ -249,7 +277,7 @@ kf.measurementNoiseCov  = cv::Mat::eye(2, 2, CV_32F) * yaml_scalar;
 | `recording` | `record_mode`, `output_dir`, `fourcc`, `fps`                 |
 | `roi`       | `x`, `y`, `width`, `height`                                  |
 | `mode0`     | `min_contour_area`, `morph_kernel_size`, `enabled_colors`, 6 色 HSV 双区间 |
-| `mode1`     | `gaussian_kernel_size`, `adaptive_block_size`, `adaptive_c`, `min_contour_area`, `max_rings_per_frame`, `max_simultaneous_rings`, `morph_open_kernel_size`, `digit_roi_scale`, `digit_open_ratio`, `invert_digit`, `template_paths` |
+| `mode1`     | `gaussian_kernel_size`, `adaptive_block_size`, `adaptive_c`, `min_contour_area`, `max_rings_per_frame`, `morph_open_kernel_size`, `digit_roi_scale`, `digit_open_ratio`, `invert_digit`, `template_paths` |
 | `mode2`     | HSV 黑色阈值, `aspect_ratio_threshold`, `min_area`, `morph_kernel_size` |
 | `logging`   | `level`, `log_to_file`, `log_file_path`                       |
 
@@ -293,7 +321,7 @@ camera:
 | 空帧           | 返回 `nullopt`，调用方 sleep 1ms 后重试      |
 | 配置键缺失     | 立即 `exit(EXIT_FAILURE)` 并打印错误键名      |
 | 模式1 单环识别失败 | 跳过该圆环，继续处理其他圆环                    |
-| 模式1 同编号冲突 / 画面拥挤 | 丢弃整帧，不发送，Kalman 计一次丢失      |
+| 模式1 同编号冲突 | 丢弃整帧，不发送，Kalman 计一次丢失              |
 | 模式1 TARGET 未检出 | 不发送，Kalman 计一次丢失                    |
 
 ---
@@ -327,5 +355,6 @@ camera:
 │   ├── ColorOrder.h            # 6 色枚举 + 名称数组
 │   └── capture_templates.py    # 模式1 数字模板制作工具（OpenCV Python）
 └── scripts/
-    └── autostart.sh            # 唯一自启动脚本：开机注册 + 看门狗（start/stop/restart/status）
+    ├── autostart-gui.sh        # 开机自启动入口（优先弹终端，失败退化后台运行）
+    └── autostart.sh            # 看门狗 + 自检（start/stop/restart/status/doctor）
 ```
