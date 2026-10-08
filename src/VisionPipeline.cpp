@@ -356,7 +356,8 @@ std::vector<DetectionResult> VisionPipeline::processMode0(
 // 模式1 —— 多圆环数字识别（同心环剥除 + Hu矩模板 argmin）
 // ========================================================================
 // 流水线：ROI → Gray → GaussianBlur → adaptiveThreshold →
-//          MORPH_OPEN → findContours(RETR_EXTERNAL) → 面积过滤 → 按面积降序 →
+//          MORPH_OPEN → findContours(RETR_EXTERNAL) → 面积过滤 →
+//          形状过滤(圆度 + minAreaRect 长宽比 + 填充率，剔除线状/方形干扰) → 按面积降序 →
 //          嵌套去重(包围盒包含 + 圆心距) → 取前 max_rings_per_frame 个 →
 //          逐环：moments 圆心 + minEnclosingCircle 半径 → 中心方形数字 ROI →
 //          数字自适应二值化 → 开运算剥同心细环(核∝半径) →
@@ -365,6 +366,8 @@ std::vector<DetectionResult> VisionPipeline::processMode0(
 //
 // **关键特性**：
 //   - 视野内可同时出现多个圆环，各自识别数字编号
+//   - 形状过滤先剔掉线状/条状/方形干扰，避免它们占用 max_rings_per_frame
+//     名额把真靶标挤出前 N（如贯穿画面的桌边线、背景板/方形纸片）
 //   - 同一物理靶标的同心环是断开的独立轮廓 → 嵌套去重后只留最大外环，
 //     保证「一个物理靶标 = 一个候选」，不会误触发丢帧
 //   - 仅输出 TARGET 指定编号的圆环；TARGET=0 时圆环空闲（不检测、不输出）
@@ -444,11 +447,69 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
                      cv::CHAIN_APPROX_SIMPLE);
 
     const double min_area = static_cast<double>(cfg.mode1MinContourArea());
+
+    // ---- 形状过滤参数 --------------------------------------------------
+    // 开关关闭时也照常读取三个键 —— 保证缺键仍立即报错退出（与其他配置一致）
+    const bool   shape_filter_on = cfg.mode1EnableShapeFilter();
+    const double min_circularity = cfg.mode1MinCircularity();
+    const double max_aspect      = cfg.mode1MaxAspectRatio();
+    const double min_fill_ratio   = cfg.mode1MinFillRatio();
+
     std::vector<const std::vector<cv::Point>*> area_filtered;
     for (const auto& c : contours) {
-        if (cv::contourArea(c) >= min_area) {
-            area_filtered.push_back(&c);
+        const double area = cv::contourArea(c);
+        if (area < min_area) {
+            continue;
         }
+
+        // ---- 形状过滤：圆度 + 长宽比双校验，剔除线状/条状/畸形干扰 --------
+        // 圆度 4π·面积/周长² 对线状干扰极敏感（实测桌边线 ≈0.02，圆环 ≈0.88）；
+        // 长宽比取 minAreaRect（而非 boundingRect，避免旋转放大长宽比）。
+        // 两者互补：圆度剔线状，长宽比剔长条/畸形块。
+        if (shape_filter_on) {
+            const double perimeter = cv::arcLength(c, true);
+            if (perimeter < 1e-6) {
+                continue;   // 退化轮廓，避免除零
+            }
+            const double circularity =
+                4.0 * CV_PI * area / (perimeter * perimeter);
+            if (circularity < min_circularity) {
+                LOG_DEBUG("模式1: 轮廓被圆度过滤 (圆度=%.3f, 面积=%.0f)",
+                          circularity, area);
+                continue;
+            }
+
+            const cv::RotatedRect rr = cv::minAreaRect(c);
+            const double w = rr.size.width;
+            const double h = rr.size.height;
+            if (w < 1.0 || h < 1.0) {
+                continue;
+            }
+            const double aspect = std::max(w, h) / std::min(w, h);
+            if (aspect > max_aspect) {
+                LOG_DEBUG("模式1: 轮廓被长宽比过滤 (长宽比=%.2f, 面积=%.0f)",
+                          aspect, area);
+                continue;
+            }
+
+            // 填充率 = 面积 / 外接圆面积：理想圆 1.0，正方形仅 ≈0.637。
+            // 正方形的圆度 ≈0.785、长宽比 =1.0，能骗过上面两道校验，必须靠
+            // 这一道把它剔除（实测真实靶标 0.98 vs 正方形 0.64）。
+            cv::Point2f circle_center;
+            float circle_radius = 0.0f;
+            cv::minEnclosingCircle(c, circle_center, circle_radius);
+            if (circle_radius > 1e-6f) {
+                const double fill_ratio =
+                    area / (CV_PI * circle_radius * circle_radius);
+                if (fill_ratio < min_fill_ratio) {
+                    LOG_DEBUG("模式1: 轮廓被填充率过滤 (填充率=%.3f, 面积=%.0f)",
+                              fill_ratio, area);
+                    continue;
+                }
+            }
+        }
+
+        area_filtered.push_back(&c);
     }
     if (area_filtered.empty()) {
         setLastDetectedRings({});

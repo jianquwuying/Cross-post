@@ -153,13 +153,23 @@ CameraThread ──(单槽帧缓冲)──> ProcessThread ──(发送队列)�
 每帧的圆环处理顺序：
 
 ```
-面积过滤(min_contour_area) → 按面积降序 → 嵌套去重（同心环只保留最大外环）
+面积过滤(min_contour_area) → 形状过滤（圆度 + 长宽比 + 填充率，剔除线状/方形干扰）
+   → 按面积降序 → 嵌套去重（同心环只保留最大外环）
    → 取前 max_rings_per_frame 个 → 逐环识别数字
       → 单个环识别失败只跳过该环
       → 同编号冲突（同编号出现两次）→ 整帧丢弃（Kalman 计一次丢失）
       → 按 TARGET 筛选 → 命中则 Kalman 输出，未命中则不输出
 ```
 
+- **形状过滤**（`enable_shape_filter`，默认开）：三道校验依次为
+  ① `圆度 = 4π·面积/周长²`（`arcLength(c,true)`）剔线状干扰，
+  ② `minAreaRect` 长宽比剔长条/畸形块，
+  ③ `填充率 = 面积/(π·外接圆半径²)` 剔方形/矩形块。
+  实测：真实靶标外环 圆度 0.885 / 长宽比 1.00 / 填充率 0.98；桌边线 圆度 0.018；
+  正方形块 圆度 0.790 / 长宽比 1.00 / 填充率 0.64 —— 注意正方形**圆度并不低**
+  （理论值 π/4≈0.785），只靠圆度+长宽比拦不住，必须靠填充率。
+  触发时 Debug 日志会打印具体数值。现场若怀疑误杀，把 `enable_shape_filter`
+  置 `false` 即可一键回退
 - **嵌套去重**：真机上同心圆环二值化后是**断开的独立轮廓**（外环/中环/内环各一个），
   判定"当前轮廓是已保留轮廓的嵌套碎片"需**同时**满足
   ① 包围盒被包含（坐标比较带 2px 容差）② 两轮廓圆心距 < `0.5 × 外环半径`；
@@ -277,7 +287,7 @@ kf.measurementNoiseCov  = cv::Mat::eye(2, 2, CV_32F) * yaml_scalar;
 | `recording` | `record_mode`, `output_dir`, `fourcc`, `fps`                 |
 | `roi`       | `x`, `y`, `width`, `height`                                  |
 | `mode0`     | `min_contour_area`, `morph_kernel_size`, `enabled_colors`, 6 色 HSV 双区间 |
-| `mode1`     | `gaussian_kernel_size`, `adaptive_block_size`, `adaptive_c`, `min_contour_area`, `max_rings_per_frame`, `morph_open_kernel_size`, `digit_roi_scale`, `digit_open_ratio`, `invert_digit`, `template_paths` |
+| `mode1`     | `gaussian_kernel_size`, `adaptive_block_size`, `adaptive_c`, `min_contour_area`, `max_rings_per_frame`, `enable_shape_filter`, `min_circularity`, `max_aspect_ratio`, `min_fill_ratio`, `morph_open_kernel_size`, `digit_roi_scale`, `digit_open_ratio`, `invert_digit`, `template_paths` |
 | `mode2`     | HSV 黑色阈值, `aspect_ratio_threshold`, `min_area`, `morph_kernel_size` |
 | `logging`   | `level`, `log_to_file`, `log_file_path`                       |
 
@@ -323,6 +333,7 @@ camera:
 | 模式1 单环识别失败 | 跳过该圆环，继续处理其他圆环                    |
 | 模式1 同编号冲突 | 丢弃整帧，不发送，Kalman 计一次丢失              |
 | 模式1 TARGET 未检出 | 不发送，Kalman 计一次丢失                    |
+| 模式1 靶标突然不输出（怀疑形状过滤误杀） | `mode1.enable_shape_filter: false` 一键回退；Debug 日志会打印被过滤轮廓的圆度/长宽比/填充率，据此下调 `min_circularity`、放宽 `max_aspect_ratio` 或下调 `min_fill_ratio` |
 
 ---
 

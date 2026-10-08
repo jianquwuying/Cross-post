@@ -243,6 +243,18 @@ bool ConfigManager::mode1InvertDigit() const {
 int ConfigManager::mode1MaxRingsPerFrame() const {
     return getRequired<int>(config_["mode1"], "max_rings_per_frame");
 }
+bool ConfigManager::mode1EnableShapeFilter() const {
+    return getRequired<bool>(config_["mode1"], "enable_shape_filter");
+}
+double ConfigManager::mode1MinCircularity() const {
+    return getRequired<double>(config_["mode1"], "min_circularity");
+}
+double ConfigManager::mode1MaxAspectRatio() const {
+    return getRequired<double>(config_["mode1"], "max_aspect_ratio");
+}
+double ConfigManager::mode1MinFillRatio() const {
+    return getRequired<double>(config_["mode1"], "min_fill_ratio");
+}
 std::string ConfigManager::mode1TemplatePath(int digit_id) const {
     // 模板路径的键是整数 1/2/3（YAML 中未加引号），不能用字符串 getRequired
     auto node = config_["mode1"]["template_paths"];

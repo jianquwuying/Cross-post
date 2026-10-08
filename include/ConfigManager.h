@@ -107,6 +107,10 @@ public:
     double mode1DigitOpenRatio()       const;   // 数字区剥环开运算核 / 圆环半径
     bool   mode1InvertDigit()          const;   // 数字二值化是否反色
     int    mode1MaxRingsPerFrame()     const;   // 每帧最多做数字识别的圆环数
+    bool   mode1EnableShapeFilter()    const;   // 形状过滤开关
+    double mode1MinCircularity()       const;   // 圆度下限 4π·面积/周长²
+    double mode1MaxAspectRatio()       const;   // 长宽比上限（minAreaRect 长边/短边）
+    double mode1MinFillRatio()         const;   // 填充率下限 面积/(π·外接圆半径²)
     std::string mode1TemplatePath(int digit_id) const;  // digit_id ∈ {1,2,3}
 
     // -------------------------------------------------------------------
