@@ -159,8 +159,19 @@ CameraThread ──(单槽帧缓冲)──> ProcessThread ──(发送队列)�
    → 取前 max_rings_per_frame 个 → 逐环识别数字
       → 单个环识别失败只跳过该环
       → 同编号冲突（同编号出现两次）→ 整帧丢弃（Kalman 计一次丢失）
-      → 按 TARGET 筛选 → 命中则 Kalman 输出，未命中则不输出
+      → 按 TARGET 筛选 → 见下方「推送逻辑矩阵」
 ```
+
+**TARGET>0 时的推送逻辑矩阵**（由 `serial.enable_no_target_frame` 总控）：
+
+| 场景 | TARGET 识别 | Kalman | 画面有其他圆环 | 推送 |
+|------|------------|--------|--------------|------|
+| 1 | ✅ | 正常 | 无关 | `type=2, color=TARGET, x, y`（真实滤波坐标） |
+| 2 | ❌ | **未超时** | 无关 | `type=2, color=TARGET, x_pred, y_pred`（预测坐标，保持连续）；**不推**其他环 |
+| 3a | ❌ | **已超时/冷启动** | ✅ N 个 | 为**每个**其他圆环推一帧 `type=2, color=该环编号, x=0, y=0`（零位包，不给坐标）；**不推** `type=0` |
+| 3b | ❌ | **已超时/冷启动** | ❌ 无 | `type=0, color=TARGET, x=0, y=0`（无目标帧） |
+
+开关关闭时：场景 1 照常；场景 2/3a/3b 均**不推送任何包**。
 
 - **形状过滤**（`enable_shape_filter`，默认开）：三道校验依次为
   ① `圆度 = 4π·面积/周长²`（`arcLength(c,true)`）剔线状干扰，
@@ -179,6 +190,9 @@ CameraThread ──(单槽帧缓冲)──> ProcessThread ──(发送队列)�
 - `TARGET=0`：圆环空闲，不检测、不输出（`max_rings_per_frame` 不参与）
 - 成功 → `target_type=2`，`color_id=TARGET 编号(1/2/3)`，`x/y=滤波后圆心`；Kalman key 用 TARGET 编号
 - 只对 TARGET 指定圆环做 Kalman 更新；其他圆环即使检出也不进滤波器
+- **零位包**（`type=2` 且 `x=y=0`）：语义是"识别到该编号圆环、但不是 TARGET，坐标无效"；
+  与 `type=0`（无目标）独立。UI 不会绘制零位包（避免在 (0,0) 画圈）
+- 同编号冲突：整帧丢弃（优先级高于零位包），此时**不推**零位包
 - 二值化调试窗：所有已识别圆环的数字 ROI（剥环后）二值图，统一高度水平拼接；无有效数字时回退显示环级二值图
 
 数字模板（`templates/num1.png` / `num2.png` / `num3.png`）需为**正视角、纯白底黑字**的灰度图，程序首次进入模式1时自动加载一次。
@@ -275,6 +289,8 @@ kf.measurementNoiseCov  = cv::Mat::eye(2, 2, CV_32F) * yaml_scalar;
 - **无目标帧**：`X=Y=0`，`Color` 标识是哪个目标丢失；由 `serial.enable_no_target_frame`
   控制（默认 `true`），用于让主控区分"视觉系统挂了"与"当前视野确实没目标"。
   置 `false` 则完全回退（无目标不发、也不发预测坐标）
+- **非 TARGET 圆环零位包**：`TargetType=2` 且 `X=Y=0` —— 表示"识别到 `Color` 编号的圆环、
+  但它不是 TARGET，坐标无效"（模式1 专用；Kalman 超时/冷启动且画面有其他圆环时逐环各推一帧）
 - 模式0 每帧只推 TARGET 指定颜色的**一包**结果（不再逐色推 6 包）
 - 接收端帧同步解析：搜寻 `0xCD` 后读固定长度，无效自动跳过
 - Debug 模式输出完整 HEX 日志

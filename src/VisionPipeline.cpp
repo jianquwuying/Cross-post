@@ -766,9 +766,37 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
         }
     }
     if (!hit) {
-        // TARGET 指定圆环未检出 → 推进 Kalman；未超时发预测坐标，超时发无目标帧
+        // TARGET 指定圆环未检出 → 推进 Kalman 丢失计数
         const cv::Point2f pred =
             predictAndUpdate(target, cv::Point2f(0, 0), false);
+
+        // 场景3a：Kalman 已超时/冷启动，且本帧识别到了**其他**圆环 →
+        // 为每个非 TARGET 圆环推一帧零位包（type=2, x=y=0，Color=该环编号），
+        // 语义是"识别到了这个圆环，但不是你要的那个，故不给坐标"；
+        // 此时**不推** type=0 心跳。
+        if (!kalman_trackers_[target].initialized &&
+            cfg.serialEnableNoTargetFrame()) {
+            bool any_other = false;
+            for (const auto& r : rings) {
+                if (r.digit_id == target) {
+                    continue;
+                }
+                DetectionResult zr;
+                zr.target_type = 2;           // 2 = 圆环
+                zr.color_id    = r.digit_id;  // 该非 TARGET 圆环的编号
+                zr.x           = 0;           // 零位：坐标无效
+                zr.y           = 0;
+                results.push_back(zr);
+                any_other = true;
+            }
+            if (any_other) {
+                return results;
+            }
+        }
+
+        // 场景2（未超时 → TARGET 预测坐标）／场景3b（超时且无其他圆环 →
+        // type=0 心跳）／开关关闭（什么都不推），三种情况统一交给
+        // pushLostOrNoTarget 判定（其内部含开关判断与坐标钳制）
         pushLostOrNoTarget(results, target, 2, target, pred,
                            frame.cols, frame.rows);
         return results;

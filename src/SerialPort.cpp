@@ -218,6 +218,8 @@ bool SerialPort::writeResult(uint8_t target_type, uint8_t color,
 
     if (target_type == 0) {
         LOG_DEBUG("串口发送: 无目标帧 (Color=%d)", color);
+    } else if (target_type == 2 && x == 0 && y == 0) {
+        LOG_DEBUG("串口发送: 非 TARGET 圆环零位包 (Color=%d)", color);
     }
 
     // 非阻塞检查：fd 是否可写？

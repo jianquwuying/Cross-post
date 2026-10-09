@@ -266,9 +266,11 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
                                 0.5, ring_color, 1);
                 }
 
-                // 绘制检测结果（跳过 target_type=0 的无目标帧，避免在 (0,0) 画圈）
+                // 绘制检测结果（跳过 target_type=0 的无目标帧；
+                // 再跳过 (0,0) 的零位包 —— 非 TARGET 圆环只报"看到了"不给坐标）
                 for (const auto& r : results) {
                     if (r.target_type == 0) continue;
+                    if (r.x == 0 && r.y == 0) continue;
                     cv::Point pt(r.x, r.y);
                     // 圆环（target_type=2）= 红色，与 TARGET 圈一致；
                     // 其余类型保持黄色
