@@ -30,9 +30,19 @@ void VisionPipeline::setMode(uint8_t mode, uint8_t target) {
         LOG_WARN("无效模式 %d，已忽略", mode);
         return;
     }
-    if (target > 3) {
-        LOG_WARN("无效目标 %d，已忽略", target);
-        return;
+
+    // ---- 按模式的 TARGET 范围校验 -------------------------------------
+    // 模式0：0=空闲，1-6=颜色（外部值）；模式1：0=空闲，1-3=圆环编号
+    if (mode == 0 && target > 6) {
+        LOG_WARN("模式0 TARGET %d 越界（有效 0-6），按 0（空闲）处理", target);
+        target = 0;
+    } else if (mode == 1 && target > 3) {
+        // 宽容处理：仍切换到圆环模式，只是先把目标当空闲
+        // （避免主控沿用模式0 的颜色 TARGET 时"切不过去却毫无提示"）
+        LOG_WARN("模式1 TARGET %d 越界（有效 0-3），按 0（空闲）处理", target);
+        target = 0;
+    } else if (mode != 0 && mode != 1) {
+        target = 0;   // 模式2/3 忽略 TARGET
     }
 
     uint8_t old_mode   = current_mode_.load();
@@ -260,13 +270,15 @@ std::vector<DetectionResult> VisionPipeline::process(const cv::Mat& frame) {
 }
 
 // ========================================================================
-// 模式0 —— 6 颜色物块检测
+// 模式0 —— TARGET 指定单色物块检测
 // ========================================================================
-// 流水线：ROI → BGR→HSV → 逐色掩码 → 轮廓 → 质心 →
+// 流水线：TARGET(0=空闲) → ROI → BGR→HSV → 该颜色掩码 → 轮廓 → 质心 →
 //          Kalman 预测/更新 → DetectionResult
 //
+// TARGET 是**外部协议值**：1=红 2=黄 3=蓝 4=绿 5=黑 6=青；
+// 内部索引 / Kalman key = TARGET-1（0-5），输出 color_id 直接用外部值。
 // 红色使用**双** HSV 区间（H 0-10 + H 170-180），通过 bitwise_or 合并。
-// 每种颜色独立跟踪。
+// 每帧只处理 TARGET 指定的那一种颜色（一次只存在一个 tracker）。
 // ========================================================================
 
 void VisionPipeline::applyHSVMask(const cv::Mat& hsv,
@@ -282,6 +294,31 @@ std::vector<DetectionResult> VisionPipeline::processMode0(
     const cv::Mat& frame) {
     std::vector<DetectionResult> results;
     auto& cfg = ConfigManager::instance();
+
+    // ---- TARGET 指定要识别的颜色（外部值 1-6，0 = 空闲）----------------
+    const uint8_t target = current_target_.load();
+    if (target == 0) {
+        // 空闲：不检测。仅当无目标帧开关开启时发一帧 {0,0,0,0}
+        // （不更新二值化调试图，保留上一帧掩码，避免调试窗闪黑）
+        if (cfg.serialEnableNoTargetFrame()) {
+            DetectionResult dr;
+            dr.target_type = 0;
+            dr.color_id    = 0;
+            dr.x           = 0;
+            dr.y           = 0;
+            results.push_back(dr);
+        }
+        return results;
+    }
+
+    // 外部值 → 内部索引 0-5（setMode 已校验，这里再防御一次）
+    const int color_idx = static_cast<int>(target) - 1;
+    if (color_idx < 0 || color_idx >= kNumColors) {
+        LOG_WARN("模式0 TARGET %d 越界（有效 1-%d），已忽略",
+                 target, kNumColors);
+        return results;
+    }
+    const char* color_name = kColorNames[color_idx];
 
     // ---- ROI ----------------------------------------------------------
     cv::Rect roi_rect(cfg.roiX(), cfg.roiY(),
@@ -304,116 +341,81 @@ std::vector<DetectionResult> VisionPipeline::processMode0(
 
     double min_area = static_cast<double>(cfg.mode0MinContourArea());
 
-    // 二值化调试图像（各颜色掩码合成）
-    cv::Mat combined_debug(roi.size(), CV_8UC3, cv::Scalar(0, 0, 0));
-    // 各颜色对应的 BGR 色彩（用于渲染合成图）
-    const cv::Scalar kDebugColors[] = {
-        cv::Scalar(0, 0, 255),    // 红
-        cv::Scalar(0, 255, 255),  // 黄
-        cv::Scalar(255, 0, 0),    // 蓝
-        cv::Scalar(0, 255, 0),    // 绿
-        cv::Scalar(128, 128, 128),// 黑（灰色）
-        cv::Scalar(255, 255, 0),  // 青
-    };
-
-    // ---- 颜色启用过滤：只处理 mode0.enabled_colors 列出的颜色 ------------
-    // 被屏蔽的颜色整色跳过：不检测、不更新 Kalman、不发送。
-    // （color_id 仍为全局 0-5 索引，屏蔽不重编号，避免串口协议对不齐）
-    const auto enabled_colors = cfg.mode0EnabledColors();
-
-    // ---- 逐色处理 ----------------------------------------------------
-    for (int c = 0; c < kNumColors; ++c) {
-        const char* color_name = kColorNames[c];
-
-        if (std::find(enabled_colors.begin(), enabled_colors.end(),
-                      color_name) == enabled_colors.end()) {
-            continue;   // 该颜色被屏蔽
-        }
-
-        // 构建颜色掩码（红色可能为双区间）
-        auto ranges = cfg.mode0ColorHSV(color_name);
-        cv::Mat color_mask(roi.size(), CV_8UC1, cv::Scalar(0));
-
-        for (const auto& r : ranges) {
-            cv::Mat m;
-            applyHSVMask(hsv, r, m);
-            cv::bitwise_or(color_mask, m, color_mask);
-        }
-
-        // 形态学开运算（去噪）
-        cv::morphologyEx(color_mask, color_mask,
-                         cv::MORPH_OPEN, morph_kernel);
-
-        // 叠加到二值化调试图像
-        combined_debug.setTo(kDebugColors[c], color_mask);
-
-        // 查找轮廓
-        std::vector<std::vector<cv::Point>> contours;
-        cv::findContours(color_mask, contours,
-                         cv::RETR_EXTERNAL,
-                         cv::CHAIN_APPROX_SIMPLE);
-
-        if (contours.empty()) {
-            // 该颜色无检测 → Kalman 预测；未初始化则发无目标帧
-            const cv::Point2f pred =
-                predictAndUpdate(c, cv::Point2f(0, 0), false);
-            pushLostOrNoTarget(results, c, 1, static_cast<uint8_t>(c), pred,
-                               frame.cols, frame.rows);
-            continue;
-        }
-
-        // 按面积选取最大轮廓
-        auto largest = std::max_element(
-            contours.begin(), contours.end(),
-            [](const std::vector<cv::Point>& a,
-               const std::vector<cv::Point>& b) {
-                return cv::contourArea(a) < cv::contourArea(b);
-            });
-
-        double area = cv::contourArea(*largest);
-        if (area < min_area) {
-            const cv::Point2f pred =
-                predictAndUpdate(c, cv::Point2f(0, 0), false);
-            pushLostOrNoTarget(results, c, 1, static_cast<uint8_t>(c), pred,
-                               frame.cols, frame.rows);
-            continue;
-        }
-
-        // 计算质心
-        auto moments = cv::moments(*largest);
-        if (std::abs(moments.m00) < 1e-6) {
-            const cv::Point2f pred =
-                predictAndUpdate(c, cv::Point2f(0, 0), false);
-            pushLostOrNoTarget(results, c, 1, static_cast<uint8_t>(c), pred,
-                               frame.cols, frame.rows);
-            continue;
-        }
-
-        float local_x = static_cast<float>(moments.m10 / moments.m00);
-        float local_y = static_cast<float>(moments.m01 / moments.m00);
-
-        // 转换到全图坐标
-        cv::Point2f measurement(local_x + roi_rect.x,
-                                local_y + roi_rect.y);
-
-        // Kalman 滤波
-        cv::Point2f filtered = predictAndUpdate(c, measurement, true);
-
-        // 裁剪到有效范围
-        filtered.x = std::max(0.0f, std::min(filtered.x,
-                              static_cast<float>(frame.cols - 1)));
-        filtered.y = std::max(0.0f, std::min(filtered.y,
-                              static_cast<float>(frame.rows - 1)));
-
-        DetectionResult dr;
-        dr.target_type = 1;   // 1 = 颜色物块
-        dr.color_id    = static_cast<uint8_t>(c);
-        dr.x           = static_cast<uint16_t>(filtered.x);
-        dr.y           = static_cast<uint16_t>(filtered.y);
-        results.push_back(dr);
+    // ---- 当前 TARGET 颜色的掩码（红色为双区间）-------------------------
+    auto ranges = cfg.mode0ColorHSV(color_name);
+    cv::Mat color_mask(roi.size(), CV_8UC1, cv::Scalar(0));
+    for (const auto& r : ranges) {
+        cv::Mat m;
+        applyHSVMask(hsv, r, m);
+        cv::bitwise_or(color_mask, m, color_mask);
     }
 
-    setDebugImage(combined_debug);
+    // ---- 形态学开运算（去噪）------------------------------------------
+    cv::morphologyEx(color_mask, color_mask, cv::MORPH_OPEN, morph_kernel);
+
+    // 调试图：当前 TARGET 颜色的单通道掩码（cv::imshow 直接显示灰度）
+    setDebugImage(color_mask);
+
+    // ---- 查找轮廓 ------------------------------------------------------
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(color_mask, contours,
+                     cv::RETR_EXTERNAL,
+                     cv::CHAIN_APPROX_SIMPLE);
+
+    // 未检出（无轮廓 / 面积不足 / 质心无效）→ Kalman 预测；
+    // 未初始化则按无目标帧机制推送（开关包裹在 pushLostOrNoTarget 内）
+    auto on_lost = [&]() {
+        const cv::Point2f pred =
+            predictAndUpdate(color_idx, cv::Point2f(0, 0), false);
+        pushLostOrNoTarget(results, color_idx, 1, target, pred,
+                           frame.cols, frame.rows);
+    };
+
+    if (contours.empty()) {
+        on_lost();
+        return results;
+    }
+
+    // 按面积选取最大轮廓
+    auto largest = std::max_element(
+        contours.begin(), contours.end(),
+        [](const std::vector<cv::Point>& a,
+           const std::vector<cv::Point>& b) {
+            return cv::contourArea(a) < cv::contourArea(b);
+        });
+
+    if (cv::contourArea(*largest) < min_area) {
+        on_lost();
+        return results;
+    }
+
+    // 计算质心
+    auto moments = cv::moments(*largest);
+    if (std::abs(moments.m00) < 1e-6) {
+        on_lost();
+        return results;
+    }
+
+    const float local_x = static_cast<float>(moments.m10 / moments.m00);
+    const float local_y = static_cast<float>(moments.m01 / moments.m00);
+
+    // 转换到全图坐标 + Kalman 滤波
+    cv::Point2f measurement(local_x + roi_rect.x, local_y + roi_rect.y);
+    cv::Point2f filtered = predictAndUpdate(color_idx, measurement, true);
+
+    // 裁剪到有效范围
+    filtered.x = std::max(0.0f, std::min(filtered.x,
+                          static_cast<float>(frame.cols - 1)));
+    filtered.y = std::max(0.0f, std::min(filtered.y,
+                          static_cast<float>(frame.rows - 1)));
+
+    DetectionResult dr;
+    dr.target_type = 1;                 // 1 = 颜色物块
+    dr.color_id    = target;            // 外部值 1-6（协议值，不做转换）
+    dr.x           = static_cast<uint16_t>(filtered.x);
+    dr.y           = static_cast<uint16_t>(filtered.y);
+    results.push_back(dr);
+
     return results;
 }
 

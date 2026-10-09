@@ -96,10 +96,6 @@ public:
     int mode0MinContourArea()   const;
     int mode0MorphKernelSize()  const;
 
-    /// 当前启用的颜色名列表（`mode0.enabled_colors`）。未列出的颜色被
-    /// 屏蔽：不检测、不更新 Kalman、不发送。
-    std::vector<std::string> mode0EnabledColors() const;
-
     // -------------------------------------------------------------------
     // 模式1  —  单圆环数字识别（Hu矩 + cv::matchShapes 模板匹配）
     // -------------------------------------------------------------------

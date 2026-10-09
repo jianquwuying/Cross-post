@@ -280,7 +280,8 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
 
                     std::string label;
                     if (r.target_type == 1) {
-                        label = std::string(kColorNames[r.color_id]);
+                        // 模式0 的 color_id 是外部值 1-6（协议值），需转换取名字
+                        label = std::string(colorNameByExternalId(r.color_id));
                     } else if (r.target_type == 2) {
                         label = "Circle" + std::to_string(r.color_id);
                     } else {

@@ -129,16 +129,17 @@ CameraThread ──(单槽帧缓冲)──> ProcessThread ──(发送队列)�
 
 远端主控通过串口发送 `MODE0`–`MODE3` + `TARGET` 切换。模式或目标变化时 Kalman 滤波器全部重置。
 
-### 模式0 — 颜色物块检测
+### 模式0 — TARGET 指定单色物块检测
 
-检测 6 种颜色：**红、黄、蓝、绿、黑、青**（可通过 `mode0.enabled_colors` 临时屏蔽部分颜色）。
+只识别串口 `TARGET` 指定的那一种颜色（与模式1 的"按 TARGET 精准输出"对齐），
+一帧只推一包，不再一次推 6 色结果。
 
-- 流水线：ROI → BGR→HSV → 逐色 `inRange` → 形态学开运算 → 轮廓 → 取最大面积 → `moments` 质心 → Kalman
-- 红色使用双 HSV 区间：`H 0–10 ∪ H 170–180`（`bitwise_or` 合并）
-- 每种颜色独立跟踪，各自持有独立的 Kalman 滤波器
-- 某颜色检测失败不影响其他颜色
-- **颜色启用过滤**：`enabled_colors` 列表之外的整色跳过（不检测/不发送）；`color_id` 仍为全局 0-5 索引，屏蔽不重编号
-- 二值化调试窗：6 色掩码合成图（各色以 BGR 色彩渲染于黑底）
+- `TARGET`：**0=空闲**（不检测，按开关发无目标帧），**1–6=红/黄/蓝/绿/黑/青**
+- 流水线：TARGET → ROI → BGR→HSV → 该颜色 `inRange`（红色双区间）→ 形态学开运算 → 轮廓 → 取最大面积 → `moments` 质心 → Kalman → 单包输出
+- **内部索引 0–5，外部（协议）值 1–6**：数组索引与 Kalman key 用 `TARGET-1`，
+  `DetectionResult.color_id` / 串口 `Color` 直接用外部值（1–6），SerialPort 层不做任何 ±1 转换
+- 未检出时按无目标帧机制推送（`type=0`，`Color=` 该颜色 1–6）
+- 二值化调试窗：当前 TARGET 颜色的**单通道掩码**（灰度，不再是 6 色 BGR 合成图）
 
 ### 模式1 — 多圆环数字识别（同心环剥除 + Hu矩 argmin，TARGET 指定输出）
 
@@ -240,7 +241,7 @@ kf.measurementNoiseCov  = cv::Mat::eye(2, 2, CV_32F) * yaml_scalar;
 ### 接收 — 模式命令（5 字节）
 
 ```
-0xCD  0x01  MODE(0-3)  TARGET(0-3)  0xDC
+0xCD  0x01  MODE(0-3)  TARGET(0-6)  0xDC
 ```
 
 | 字节 | 字段     | 值                                                         |
@@ -248,10 +249,12 @@ kf.measurementNoiseCov  = cv::Mat::eye(2, 2, CV_32F) * yaml_scalar;
 | 0    | `0xCD`   | 帧头                                                        |
 | 1    | `0x01`   | 命令类型                                                     |
 | 2    | `MODE`   | 0=颜色物块  1=圆环  2=圆柱  3=空闲                             |
-| 3    | `TARGET` | 仅 `MODE=1` 有效：0=圆环空闲，1/2/3=指定输出的圆环编号；其他模式忽略 |
+| 3    | `TARGET` | `MODE=0`：0=空闲，1–6=红/黄/蓝/绿/黑/青；<br>`MODE=1`：0=空闲，1–3=指定输出的圆环编号（不受颜色编号影响）；<br>`MODE=2/3`：忽略（内部强制为 0） |
 | 4    | `0xDC`   | 帧尾                                                        |
 
-校验：第 1 字节为 `0x01`、`MODE ≤ 3`、`TARGET ≤ 3`、帧尾为 `0xDC`，任一不满足则丢弃该帧并继续搜寻 `0xCD`。
+校验：第 1 字节为 `0x01`、`MODE ≤ 3`、`TARGET ≤ 6`、帧尾为 `0xDC`，任一不满足则丢弃该帧并继续搜寻 `0xCD`；
+按模式的 TARGET 范围（模式0 ≤6、模式1 ≤3）由 `VisionPipeline::setMode` 处理，
+越界时**仍切换模式**并打 WARN，把 TARGET 当 0（空闲）。
 
 ### 发送 — 检测结果（9 字节）
 
@@ -264,7 +267,7 @@ kf.measurementNoiseCov  = cv::Mat::eye(2, 2, CV_32F) * yaml_scalar;
 | 0    | `0xCD`      | 帧头                                                       |
 | 1    | `0x06`      | 数据类型                                                   |
 | 2    | TargetType  | 0=**无目标帧**  1=颜色物块  2=圆环  3=圆柱                    |
-| 3    | Color       | 有目标时：模式0=颜色索引(0=红,1=黄,2=蓝,3=绿,4=黑,5=青)，模式1=TARGET 编号(1-3)；<br>无目标帧(0)时：模式0=丢失的颜色索引，模式1=丢失的 TARGET 编号（TARGET=0 时为 0），模式2/3=0 |
+| 3    | Color       | 有目标时：模式0=**颜色 1–6**(1=红,2=黄,3=蓝,4=绿,5=黑,6=青)，模式1=TARGET 编号(1–3)；<br>无目标帧(0)时：模式0=丢失的颜色(1–6)，模式1=丢失的 TARGET 编号（TARGET=0 时为 0），模式2/3=0 |
 | 4-5  | X           | `uint16_t` 大端序                                          |
 | 6-7  | Y           | `uint16_t` 大端序                                          |
 | 8    | `0xDC`      | 帧尾                                                       |
@@ -272,7 +275,7 @@ kf.measurementNoiseCov  = cv::Mat::eye(2, 2, CV_32F) * yaml_scalar;
 - **无目标帧**：`X=Y=0`，`Color` 标识是哪个目标丢失；由 `serial.enable_no_target_frame`
   控制（默认 `true`），用于让主控区分"视觉系统挂了"与"当前视野确实没目标"。
   置 `false` 则完全回退（无目标不发、也不发预测坐标）
-- 模式0 按**启用颜色逐色独立推送**，主控需按 `Color` 分别处理
+- 模式0 每帧只推 TARGET 指定颜色的**一包**结果（不再逐色推 6 包）
 - 接收端帧同步解析：搜寻 `0xCD` 后读固定长度，无效自动跳过
 - Debug 模式输出完整 HEX 日志
 
@@ -292,7 +295,7 @@ kf.measurementNoiseCov  = cv::Mat::eye(2, 2, CV_32F) * yaml_scalar;
 | `kalman`    | `process_noise_cov`, `measurement_noise_cov`, `init_frames`, `lost_frame_limit` |
 | `recording` | `record_mode`, `output_dir`, `fourcc`, `fps`                 |
 | `roi`       | `x`, `y`, `width`, `height`                                  |
-| `mode0`     | `min_contour_area`, `morph_kernel_size`, `enabled_colors`, 6 色 HSV 双区间 |
+| `mode0`     | `min_contour_area`, `morph_kernel_size`, 6 色 HSV 双区间（识别的颜色由串口 TARGET 指定） |
 | `mode1`     | `gaussian_kernel_size`, `adaptive_block_size`, `adaptive_c`, `min_contour_area`, `max_rings_per_frame`, `enable_shape_filter`, `min_circularity`, `max_aspect_ratio`, `min_fill_ratio`, `morph_open_kernel_size`, `digit_roi_scale`, `digit_open_ratio`, `invert_digit`, `template_paths` |
 | `mode2`     | HSV 黑色阈值, `aspect_ratio_threshold`, `min_area`, `morph_kernel_size` |
 | `logging`   | `level`, `log_to_file`, `log_file_path`                       |

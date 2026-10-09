@@ -176,7 +176,9 @@ std::optional<SerialCommand> SerialPort::readCommand() {
         LOG_DEBUG("串口 RX：无效模式 %d", mode);
         return std::nullopt;
     }
-    if (target > 3) {
+    if (target > 6) {
+        // 0-6 均合法（模式0：0=空闲 1-6=颜色；模式1：0=空闲 1-3=圆环编号）；
+        // 具体模式的范围校验由 VisionPipeline::setMode 处理
         LOG_DEBUG("串口 RX：无效目标 %d", target);
         return std::nullopt;
     }
