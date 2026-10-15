@@ -420,7 +420,7 @@ std::vector<DetectionResult> VisionPipeline::processMode0(
 }
 
 // ========================================================================
-// 模式1 —— 多圆环数字识别（同心环剥除 + Hu矩模板 argmin）
+// 模式1 —— 多圆环数字识别（同心环剥除 + 归一化位图多角度 IoU）
 // ========================================================================
 // 流水线：ROI → Gray → GaussianBlur → adaptiveThreshold →
 //          MORPH_OPEN → findContours(RETR_EXTERNAL) → 面积过滤 →
@@ -428,7 +428,7 @@ std::vector<DetectionResult> VisionPipeline::processMode0(
 //          嵌套去重(包围盒包含 + 圆心距) → 取前 max_rings_per_frame 个 →
 //          逐环：moments 圆心 + minEnclosingCircle 半径 → 中心方形数字 ROI →
 //          数字自适应二值化 → 开运算剥同心细环(核∝半径) →
-//          取靠近圆心的最大墨块 → cv::matchShapes 与 3 模板对比(argmin) →
+//          取靠近圆心的最大墨块 → 归一化位图与多角度模板比 IoU(取最大) →
 //          同编号冲突整帧丢弃 → 按 TARGET 取指定编号 → Kalman → 输出单包
 //
 // **关键特性**：
@@ -439,8 +439,8 @@ std::vector<DetectionResult> VisionPipeline::processMode0(
 //     保证「一个物理靶标 = 一个候选」，不会误触发丢帧
 //   - 仅输出 TARGET 指定编号的圆环；TARGET=0 时圆环空闲（不检测、不输出）
 //   - 靶标为"中心数字 + 多层同心细环"；开核按半径缩放，距离无关地剥环
-//   - Hu 矩天然旋转不变，机械臂旋转下无需任何旋转模板
-//   - 该字体绝对匹配分偏高且不稳，改用三模板 argmin 判数字编号（不做绝对阈值）
+//   - 数字匹配改用"按外接框归一化的二值位图 + 多角度模板 IoU"
+//     （旧 cv::matchShapes/Hu矩 实机验证不可用：见 loadDigitTemplates 注释）
 // ========================================================================
 std::vector<DetectionResult> VisionPipeline::processMode1(
     const cv::Mat& frame) {
@@ -823,10 +823,64 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
 // ========================================================================
 // 模式1 —— 数字模板加载（仅一次）
 // ========================================================================
+// 模板统一处理成"归一化实心字形位图"，并为每个数字预生成多个旋转角实例
+// （见 digit_match_angle_range / step）。判号时用位图 IoU 逐数字取最大，
+// 避免 cv::matchShapes(Hu矩) 对笔画粗细/渲染风格的极端敏感性。
+// ========================================================================
+bool VisionPipeline::normalizeGlyph(const cv::Mat& bin, int size, cv::Mat& out) {
+    std::vector<std::vector<cv::Point>> cnts;
+    cv::findContours(bin.clone(), cnts, cv::RETR_EXTERNAL,
+                     cv::CHAIN_APPROX_SIMPLE);
+    if (cnts.empty()) {
+        return false;
+    }
+    auto largest = std::max_element(
+        cnts.begin(), cnts.end(),
+        [](const std::vector<cv::Point>& a, const std::vector<cv::Point>& b) {
+            return cv::contourArea(a) < cv::contourArea(b);
+        });
+    const cv::Rect bb = cv::boundingRect(*largest);
+    if (bb.width < 2 || bb.height < 2) {
+        return false;
+    }
+    // 把该轮廓填充成实心字形，再按外接框拉伸归一化（blob 与模板同样处理，
+    // 保证同一姿态下两者位图可比）
+    std::vector<std::vector<cv::Point>> one{*largest};
+    cv::Mat mask = cv::Mat::zeros(bin.size(), CV_8UC1);
+    cv::drawContours(mask, one, -1, cv::Scalar(255), cv::FILLED);
+    cv::resize(mask(bb), out, cv::Size(size, size), 0, 0, cv::INTER_AREA);
+    cv::threshold(out, out, 127, 255, cv::THRESH_BINARY);
+    return true;
+}
+
+double VisionPipeline::bitmapIoU(const cv::Mat& a, const cv::Mat& b) {
+    if (a.size() != b.size() || a.empty()) {
+        return 0.0;
+    }
+    double inter = 0.0, uni = 0.0;
+    for (int y = 0; y < a.rows; ++y) {
+        const uint8_t* pa = a.ptr<uint8_t>(y);
+        const uint8_t* pb = b.ptr<uint8_t>(y);
+        for (int x = 0; x < a.cols; ++x) {
+            const bool va = pa[x] > 127;
+            const bool vb = pb[x] > 127;
+            if (va || vb) {
+                ++uni;
+                if (va && vb) ++inter;
+            }
+        }
+    }
+    return uni > 0.0 ? inter / uni : 0.0;
+}
+
 bool VisionPipeline::loadDigitTemplates() {
     auto& cfg = ConfigManager::instance();
-    template_contours_.clear();
-    template_contours_.reserve(3);
+    digit_templates_.clear();
+    digit_templates_.reserve(3);
+
+    const int size  = std::max(8, cfg.mode1DigitMatchSize());
+    const int range = std::max(0, cfg.mode1DigitMatchAngleRange());
+    const int step  = std::max(1, cfg.mode1DigitMatchAngleStep());
 
     for (int id = 1; id <= 3; ++id) {
         std::string path = cfg.mode1TemplatePath(id);
@@ -841,24 +895,34 @@ bool VisionPipeline::loadDigitTemplates() {
         cv::threshold(tmpl, bin, 0, 255,
                       cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-        std::vector<std::vector<cv::Point>> cnts;
-        cv::findContours(bin, cnts, cv::RETR_EXTERNAL,
-                         cv::CHAIN_APPROX_SIMPLE);
-        if (cnts.empty()) {
-            LOG_ERROR("数字模板无有效轮廓: %s", path.c_str());
+        cv::Mat base;
+        if (!normalizeGlyph(bin, size, base)) {
+            LOG_ERROR("数字模板无法归一化: %s", path.c_str());
             return false;
         }
 
-        auto largest = std::max_element(
-            cnts.begin(), cnts.end(),
-            [](const std::vector<cv::Point>& a,
-               const std::vector<cv::Point>& b) {
-                return cv::contourArea(a) < cv::contourArea(b);
-            });
-        template_contours_.push_back(*largest);
+        // 多角度实例：绕中心旋转后重新按外接框归一化
+        const cv::Point2f c(size / 2.0f, size / 2.0f);
+        std::vector<cv::Mat> insts;
+        for (int a = -range; a <= range; a += step) {
+            const cv::Mat M = cv::getRotationMatrix2D(c, a, 1.0);
+            cv::Mat rot;
+            cv::warpAffine(base, rot, M, base.size(), cv::INTER_LINEAR,
+                           cv::BORDER_CONSTANT, cv::Scalar(0));
+            cv::threshold(rot, rot, 127, 255, cv::THRESH_BINARY);
+            cv::Mat norm;
+            if (normalizeGlyph(rot, size, norm)) {
+                insts.push_back(norm);
+            }
+        }
+        if (insts.empty()) {
+            LOG_ERROR("数字模板多角度实例生成失败: %s", path.c_str());
+            return false;
+        }
+        digit_templates_.push_back(insts);
     }
 
-    LOG_INFO("数字模板加载完成 (3 个)");
+    LOG_INFO("数字模板加载完成 (3 个数字 × 多角度实例)");
     return true;
 }
 
@@ -867,7 +931,7 @@ bool VisionPipeline::loadDigitTemplates() {
 // ========================================================================
 // 步骤：moments 圆心 + minEnclosingCircle 半径 → 中心方形数字 ROI →
 //       自适应二值化 → 开运算剥同心细环(核 ∝ 半径) →
-//       取"靠近圆心的最大墨块" → matchShapes 与 3 模板对比(argmin)
+//       取"靠近圆心的最大墨块" → 归一化位图 vs 多角度模板 IoU（取最大）
 // 任一阶段失败返回 false，调用方跳过该圆环（不影响其他圆环与 Kalman）。
 // ========================================================================
 bool VisionPipeline::recognizeRingDigit(
@@ -1003,17 +1067,36 @@ bool VisionPipeline::recognizeRingDigit(
         return false;
     }
 
-    // ---- Hu 矩模板匹配（matchShapes 旋转不变，argmin 三选一）----------
-    // 该衬线字体下绝对匹配分与模板笔画粗细相关、偏高且同类/异类分差不稳，
-    // 不做绝对阈值，直接取与三个模板中最小者对应的编号（实测 argmin 全对）。
-    double best_score = std::numeric_limits<double>::max();
+    // ---- 归一化位图 + 多角度 IoU 匹配（argmax 三选一）------------------
+    // 不用 cv::matchShapes：实机验证其 I1 距离对"笔画粗细/渲染风格"极端敏感
+    // —— 真实相机数字与任一模板的距离都 ≈6，而 2/3 两个模板之间仅 1.2，
+    // 判号实际被噪声主导（±30° 旋转就会把 2 判成 3）。改为把数字墨块与模板
+    // 都按外接框归一化成 size² 二值位图，模板预生成多角度实例，取 IoU 最大者；
+    // 同一姿态下正确数字约 0.70、次优约 0.44（≈2 倍裕量），旋转由角度实例覆盖。
+    const int msize = std::max(8, cfg.mode1DigitMatchSize());
+    cv::Mat norm_blob;
+    {
+        const cv::Rect bb = cv::boundingRect(*digit_blob);
+        if (bb.width < 2 || bb.height < 2) {
+            return false;
+        }
+        cv::Mat blob_mask = cv::Mat::zeros(digit_bin.size(), CV_8UC1);
+        std::vector<std::vector<cv::Point>> one{*digit_blob};
+        cv::drawContours(blob_mask, one, -1, cv::Scalar(255), cv::FILLED);
+        cv::resize(blob_mask(bb), norm_blob, cv::Size(msize, msize), 0, 0,
+                   cv::INTER_AREA);
+        cv::threshold(norm_blob, norm_blob, 127, 255, cv::THRESH_BINARY);
+    }
+
+    double best_score = -1.0;   // IoU 越大越像
     int best_id = -1;
-    for (size_t t = 0; t < template_contours_.size(); ++t) {
-        double d = cv::matchShapes(*digit_blob, template_contours_[t],
-                                   cv::CONTOURS_MATCH_I1, 0.0);
-        if (d < best_score) {
-            best_score = d;
-            best_id = static_cast<int>(t) + 1;
+    for (size_t t = 0; t < digit_templates_.size(); ++t) {
+        for (const auto& inst : digit_templates_[t]) {
+            const double s = bitmapIoU(norm_blob, inst);
+            if (s > best_score) {
+                best_score = s;
+                best_id = static_cast<int>(t) + 1;
+            }
         }
     }
     if (best_id < 1) {

@@ -141,7 +141,7 @@ CameraThread ──(单槽帧缓冲)──> ProcessThread ──(发送队列)�
 - 未检出时按无目标帧机制推送（`type=0`，`Color=` 该颜色 1–6）
 - 二值化调试窗：当前 TARGET 颜色的**单通道掩码**（灰度，不再是 6 色 BGR 合成图）
 
-### 模式1 — 多圆环数字识别（同心环剥除 + Hu矩 argmin，TARGET 指定输出）
+### 模式1 — 多圆环数字识别（同心环剥除 + 归一化位图多角度 IoU，TARGET 指定输出）
 
 视野内可**同时出现多个圆环**，算法逐个识别数字编号，只输出串口命令中 `TARGET` 指定的那一个。靶标实物为「**中心衬线数字 1/2/3 + 多层同心细环**」的印章式图案；摄像头固定在机械臂上可能旋转。单环识别原理：
 
@@ -149,14 +149,21 @@ CameraThread ──(单槽帧缓冲)──> ProcessThread ──(发送队列)�
 2. 中心方形裁剪（半宽 = `digit_roi_scale × 半径`）；
 3. 数字区自适应二值化后，用**随半径缩放的开运算核**（`digit_open_ratio × 半径`）把同心细环剥掉、只留粗数字笔画 —— 环线宽度与靶标半径成比例，故开核也随半径缩放，远近通用；
 4. 取靠近圆心的最大墨块作为数字轮廓；
-5. `cv::matchShapes`（Hu 矩，旋转不变）与 3 个模板对比，**取三模板中最小者（argmin）** 判数字编号 —— 该字体绝对匹配分偏高且不稳，不做绝对阈值。
+5. 数字墨块与模板都按外接框归一化成 `digit_match_size²` 二值位图，模板预生成多角度实例
+   （`±digit_match_angle_range`、步长 `digit_match_angle_step`），**取 IoU 最大者**判数字编号。
+
+> **为什么不用 `cv::matchShapes`（Hu 矩）**：实机实测其 `CONTOURS_MATCH_I1` 距离对"笔画粗细 /
+> 渲染风格"极端敏感——真实相机的数字与任一模板的距离都是 **≈6**，而 2 与 3 两个模板之间只有
+> **1.2**，判号被风格差异主导（同一模板自身缩放 1.1× 就会产生 1.34 的距离）。表现为
+> 相机滚转 ±30° 即把 2 判成 3。改成归一化位图 IoU 后，同一姿态下正确数字 **0.70**、次优
+> **0.44**（≈2 倍裕量），旋转由多角度实例覆盖。
 
 每帧的圆环处理顺序：
 
 ```
 面积过滤(min_contour_area) → 形状过滤（圆度 + 长宽比 + 填充率，剔除线状/方形干扰）
    → 按面积降序 → 嵌套去重（同心环只保留最大外环）
-   → 取前 max_rings_per_frame 个 → 逐环识别数字
+      → 取前 max_rings_per_frame 个 → 逐环识别数字（归一化位图多角度 IoU）
       → 单个环识别失败只跳过该环
       → 同编号冲突（同编号出现两次）→ 整帧丢弃（Kalman 计一次丢失）
       → 按 TARGET 筛选 → 见下方「推送逻辑矩阵」
@@ -312,7 +319,7 @@ kf.measurementNoiseCov  = cv::Mat::eye(2, 2, CV_32F) * yaml_scalar;
 | `recording` | `record_mode`, `output_dir`, `fourcc`, `fps`                 |
 | `roi`       | `x`, `y`, `width`, `height`                                  |
 | `mode0`     | `min_contour_area`, `morph_kernel_size`, 6 色 HSV 双区间（识别的颜色由串口 TARGET 指定） |
-| `mode1`     | `gaussian_kernel_size`, `adaptive_block_size`, `adaptive_c`, `min_contour_area`, `max_rings_per_frame`, `enable_shape_filter`, `min_circularity`, `max_aspect_ratio`, `min_fill_ratio`, `morph_open_kernel_size`, `digit_roi_scale`, `digit_open_ratio`, `invert_digit`, `template_paths` |
+| `mode1`     | `gaussian_kernel_size`, `adaptive_block_size`, `adaptive_c`, `min_contour_area`, `max_rings_per_frame`, `enable_shape_filter`, `min_circularity`, `max_aspect_ratio`, `min_fill_ratio`, `morph_open_kernel_size`, `digit_roi_scale`, `digit_open_ratio`, `digit_adaptive_block_ratio`, `invert_digit`, `digit_match_size`, `digit_match_angle_range`, `digit_match_angle_step`, `template_paths` |
 | `mode2`     | HSV 黑色阈值, `aspect_ratio_threshold`, `min_area`, `morph_kernel_size` |
 | `logging`   | `level`, `log_to_file`, `log_file_path`                       |
 
@@ -382,7 +389,7 @@ camera:
 │   ├── ConfigManager.cpp       # 42 个 YAML 访问器
 │   ├── CameraCapture.cpp       # 异常安全读帧 + 断连重连
 │   ├── SerialPort.cpp          # 帧同步解析 + HEX 日志 + 波特率自适应
-│   └── VisionPipeline.cpp      # 模式0(HSV+轮廓) 模式1(多圆环Hu矩+matchShapes) 模式2(minAreaRect) + Kalman
+│   └── VisionPipeline.cpp      # 模式0(HSV+轮廓) 模式1(多圆环+归一化位图IoU) 模式2(minAreaRect) + Kalman
 ├── tools/
 │   ├── Logger.h                # 双通道日志单例（控制台彩色 + 文件纯文本 flush）
 │   ├── FPSCounter.h            # 1 秒滑动窗帧率计算

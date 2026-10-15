@@ -112,6 +112,13 @@ private:
     std::vector<DetectionResult> processMode1(const cv::Mat& frame);
     bool loadDigitTemplates();   // 加载 3 个数字模板轮廓（一次）
 
+    /// 把一幅二值图里"最大轮廓"填充成实心字形，按外接框归一化成
+    /// size×size 的二值位图（用于位图 IoU 匹配）。
+    static bool normalizeGlyph(const cv::Mat& bin, int size, cv::Mat& out);
+
+    /// 两幅同尺寸二值位图的 IoU（交并比）。
+    static double bitmapIoU(const cv::Mat& a, const cv::Mat& b);
+
     /// 对单个圆环轮廓做数字识别（剥同心细环 + Hu矩 argmin）。
     /// 成功返回 true，并填充 digit_id(1-3) / center(全图坐标) /
     /// radius / digit_binary(剥环后的数字 ROI 二值图)；
@@ -138,7 +145,8 @@ private:
 
     // ---- 模式1 数字模板（懒加载一次）-----------------------------------
     bool digit_templates_loaded_ = false;
-    std::vector<std::vector<cv::Point>> template_contours_;  // 数字 1/2/3 轮廓
+    // 数字模板：digit_templates_[digit-1] = 该数字在多个旋转角下的归一化位图
+    std::vector<std::vector<cv::Mat>> digit_templates_;
 
     // ---- 模式1 最近一帧检测到的圆环（供 UI 绘制）------------------------
     mutable std::mutex rings_mutex_;

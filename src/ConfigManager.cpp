@@ -227,6 +227,15 @@ double ConfigManager::mode1DigitAdaptiveBlockRatio() const {
 bool ConfigManager::mode1InvertDigit() const {
     return getRequired<bool>(config_["mode1"], "invert_digit");
 }
+int ConfigManager::mode1DigitMatchSize() const {
+    return getRequired<int>(config_["mode1"], "digit_match_size");
+}
+int ConfigManager::mode1DigitMatchAngleRange() const {
+    return getRequired<int>(config_["mode1"], "digit_match_angle_range");
+}
+int ConfigManager::mode1DigitMatchAngleStep() const {
+    return getRequired<int>(config_["mode1"], "digit_match_angle_step");
+}
 int ConfigManager::mode1MaxRingsPerFrame() const {
     return getRequired<int>(config_["mode1"], "max_rings_per_frame");
 }

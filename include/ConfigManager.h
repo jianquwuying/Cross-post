@@ -109,6 +109,9 @@ public:
     double mode1DigitOpenRatio()       const;   // 数字区剥环开运算核 / 圆环半径
     double mode1DigitAdaptiveBlockRatio() const; // 数字二值化邻域 / 数字ROI短边
     bool   mode1InvertDigit()          const;   // 数字二值化是否反色
+    int    mode1DigitMatchSize()       const;   // 数字匹配归一化位图边长（像素）
+    int    mode1DigitMatchAngleRange() const;   // 多角度模板搜索范围（±度）
+    int    mode1DigitMatchAngleStep()  const;   // 多角度模板搜索步长（度）
     int    mode1MaxRingsPerFrame()     const;   // 每帧最多做数字识别的圆环数
     bool   mode1EnableShapeFilter()    const;   // 形状过滤开关
     double mode1MinCircularity()       const;   // 圆度下限 4π·面积/周长²
