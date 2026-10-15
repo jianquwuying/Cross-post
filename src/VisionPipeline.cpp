@@ -25,37 +25,21 @@ VisionPipeline::VisionPipeline() {
 // ========================================================================
 // 模式控制
 // ========================================================================
-void VisionPipeline::setMode(uint8_t mode, uint8_t target) {
+void VisionPipeline::setMode(uint8_t mode) {
     if (mode > 3) {
         LOG_WARN("无效模式 %d，已忽略", mode);
         return;
     }
 
-    // ---- 按模式的 TARGET 范围校验 -------------------------------------
-    // 模式0：0=空闲，1-6=颜色（外部值）；模式1：0=空闲，1-3=圆环编号
-    if (mode == 0 && target > 6) {
-        LOG_WARN("模式0 TARGET %d 越界（有效 0-6），按 0（空闲）处理", target);
-        target = 0;
-    } else if (mode == 1 && target > 3) {
-        // 宽容处理：仍切换到圆环模式，只是先把目标当空闲
-        // （避免主控沿用模式0 的颜色 TARGET 时"切不过去却毫无提示"）
-        LOG_WARN("模式1 TARGET %d 越界（有效 0-3），按 0（空闲）处理", target);
-        target = 0;
-    } else if (mode != 0 && mode != 1) {
-        target = 0;   // 模式2/3 忽略 TARGET
-    }
-
-    uint8_t old_mode   = current_mode_.load();
-    uint8_t old_target = current_target_.load();
-    if (old_mode == mode && old_target == target) {
+    // 串口命令里的 TARGET 位已被忽略（帧格式保留，值不参与任何判断）
+    const uint8_t old_mode = current_mode_.load();
+    if (old_mode == mode) {
         return;   // 无变化 —— 不重置 Kalman
     }
 
     current_mode_.store(mode);
-    current_target_.store(target);
 
-    LOG_INFO("模式/目标切换: MODE%d TARGET%d → MODE%d TARGET%d",
-             old_mode, old_target, mode, target);
+    LOG_INFO("模式切换: MODE%d → MODE%d", old_mode, mode);
     pending_kalman_reset_.store(true);
 }
 
@@ -270,15 +254,16 @@ std::vector<DetectionResult> VisionPipeline::process(const cv::Mat& frame) {
 }
 
 // ========================================================================
-// 模式0 —— TARGET 指定单色物块检测
+// 模式0 —— 6 色物块「逐槽位快照」
 // ========================================================================
-// 流水线：TARGET(0=空闲) → ROI → BGR→HSV → 该颜色掩码 → 轮廓 → 质心 →
-//          Kalman 预测/更新 → DetectionResult
+// 流水线：ROI → BGR→HSV → 逐色掩码 → 轮廓 → 质心 → Kalman 预测/更新
 //
-// TARGET 是**外部协议值**：1=红 2=黄 3=蓝 4=绿 5=黑 6=青；
-// 内部索引 / Kalman key = TARGET-1（0-5），输出 color_id 直接用外部值。
+// **每帧固定输出 6 包**（槽位 = 颜色外部值 1=红 … 6=青，内部索引/Kalman key = 槽位-1）：
+//   检出            → {type=1, color_id=槽位, x, y}（Kalman 滤波后）
+//   未检出且未超时  → {type=1, color_id=槽位, x_pred, y_pred}（短时丢失顶住坐标）
+//   未超时复位/冷启动 → {type=0, color_id=槽位, 0, 0}（0 值包）
+// 后两种由 serial.enable_no_target_frame 控制（关闭时只播报真实检出）。
 // 红色使用**双** HSV 区间（H 0-10 + H 170-180），通过 bitwise_or 合并。
-// 每帧只处理 TARGET 指定的那一种颜色（一次只存在一个 tracker）。
 // ========================================================================
 
 void VisionPipeline::applyHSVMask(const cv::Mat& hsv,
@@ -295,31 +280,6 @@ std::vector<DetectionResult> VisionPipeline::processMode0(
     std::vector<DetectionResult> results;
     auto& cfg = ConfigManager::instance();
 
-    // ---- TARGET 指定要识别的颜色（外部值 1-6，0 = 空闲）----------------
-    const uint8_t target = current_target_.load();
-    if (target == 0) {
-        // 空闲：不检测。仅当无目标帧开关开启时发一帧 {0,0,0,0}
-        // （不更新二值化调试图，保留上一帧掩码，避免调试窗闪黑）
-        if (cfg.serialEnableNoTargetFrame()) {
-            DetectionResult dr;
-            dr.target_type = 0;
-            dr.color_id    = 0;
-            dr.x           = 0;
-            dr.y           = 0;
-            results.push_back(dr);
-        }
-        return results;
-    }
-
-    // 外部值 → 内部索引 0-5（setMode 已校验，这里再防御一次）
-    const int color_idx = static_cast<int>(target) - 1;
-    if (color_idx < 0 || color_idx >= kNumColors) {
-        LOG_WARN("模式0 TARGET %d 越界（有效 1-%d），已忽略",
-                 target, kNumColors);
-        return results;
-    }
-    const char* color_name = kColorNames[color_idx];
-
     // ---- ROI ----------------------------------------------------------
     cv::Rect roi_rect(cfg.roiX(), cfg.roiY(),
                       cfg.roiWidth(), cfg.roiHeight());
@@ -334,93 +294,100 @@ std::vector<DetectionResult> VisionPipeline::processMode0(
     cv::Mat hsv;
     cv::cvtColor(roi, hsv, cv::COLOR_BGR2HSV);
 
-    int morph_ksize = cfg.mode0MorphKernelSize();
+    const int morph_ksize = cfg.mode0MorphKernelSize();
     cv::Mat morph_kernel = cv::getStructuringElement(
-        cv::MORPH_RECT,
-        cv::Size(morph_ksize, morph_ksize));
+        cv::MORPH_RECT, cv::Size(morph_ksize, morph_ksize));
 
-    double min_area = static_cast<double>(cfg.mode0MinContourArea());
+    const double min_area = static_cast<double>(cfg.mode0MinContourArea());
 
-    // ---- 当前 TARGET 颜色的掩码（红色为双区间）-------------------------
-    auto ranges = cfg.mode0ColorHSV(color_name);
-    cv::Mat color_mask(roi.size(), CV_8UC1, cv::Scalar(0));
-    for (const auto& r : ranges) {
-        cv::Mat m;
-        applyHSVMask(hsv, r, m);
-        cv::bitwise_or(color_mask, m, color_mask);
-    }
-
-    // ---- 形态学开运算（去噪）------------------------------------------
-    cv::morphologyEx(color_mask, color_mask, cv::MORPH_OPEN, morph_kernel);
-
-    // 调试图：当前 TARGET 颜色的单通道掩码（cv::imshow 直接显示灰度）
-    setDebugImage(color_mask);
-
-    // ---- 查找轮廓 ------------------------------------------------------
-    std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(color_mask, contours,
-                     cv::RETR_EXTERNAL,
-                     cv::CHAIN_APPROX_SIMPLE);
-
-    // 未检出（无轮廓 / 面积不足 / 质心无效）→ Kalman 预测；
-    // 未初始化则按无目标帧机制推送（开关包裹在 pushLostOrNoTarget 内）
-    auto on_lost = [&]() {
-        const cv::Point2f pred =
-            predictAndUpdate(color_idx, cv::Point2f(0, 0), false);
-        pushLostOrNoTarget(results, color_idx, 1, target, pred,
-                           frame.cols, frame.rows);
+    // 二值化调试图：6 色掩码按各自 BGR 色彩合成到黑底
+    cv::Mat combined_debug(roi.size(), CV_8UC3, cv::Scalar(0, 0, 0));
+    const cv::Scalar kDebugColors[] = {
+        cv::Scalar(0, 0, 255),     // 1 红
+        cv::Scalar(0, 255, 255),   // 2 黄
+        cv::Scalar(255, 0, 0),     // 3 蓝
+        cv::Scalar(0, 255, 0),     // 4 绿
+        cv::Scalar(128, 128, 128), // 5 黑（灰）
+        cv::Scalar(255, 255, 0),   // 6 青
     };
 
-    if (contours.empty()) {
-        on_lost();
-        return results;
+    // ---- 逐色 6 个槽位：每色各推一包 -----------------------------------
+    for (int c = 0; c < kNumColors; ++c) {
+        const uint8_t slot = static_cast<uint8_t>(c) + 1;   // 协议值 1-6
+        const char* color_name = kColorNames[c];
+
+        // 掩码（红色双区间）+ 形态学开运算
+        auto ranges = cfg.mode0ColorHSV(color_name);
+        cv::Mat color_mask(roi.size(), CV_8UC1, cv::Scalar(0));
+        for (const auto& r : ranges) {
+            cv::Mat m;
+            applyHSVMask(hsv, r, m);
+            cv::bitwise_or(color_mask, m, color_mask);
+        }
+        cv::morphologyEx(color_mask, color_mask,
+                         cv::MORPH_OPEN, morph_kernel);
+        combined_debug.setTo(kDebugColors[c], color_mask);
+
+        // 未检出（无轮廓/面积不足/质心无效）→ Kalman 预测；未超时发预测坐标，
+        // 已超时/冷启动发 0 值包（开关包裹在 pushLostOrNoTarget 内）
+        auto on_lost = [&]() {
+            const cv::Point2f pred =
+                predictAndUpdate(c, cv::Point2f(0, 0), false);
+            pushLostOrNoTarget(results, c, 1, slot, pred,
+                               frame.cols, frame.rows);
+        };
+
+        std::vector<std::vector<cv::Point>> contours;
+        cv::findContours(color_mask, contours,
+                         cv::RETR_EXTERNAL,
+                         cv::CHAIN_APPROX_SIMPLE);
+        if (contours.empty()) {
+            on_lost();
+            continue;
+        }
+
+        auto largest = std::max_element(
+            contours.begin(), contours.end(),
+            [](const std::vector<cv::Point>& a,
+               const std::vector<cv::Point>& b) {
+                return cv::contourArea(a) < cv::contourArea(b);
+            });
+        if (cv::contourArea(*largest) < min_area) {
+            on_lost();
+            continue;
+        }
+
+        auto moments = cv::moments(*largest);
+        if (std::abs(moments.m00) < 1e-6) {
+            on_lost();
+            continue;
+        }
+
+        const float local_x = static_cast<float>(moments.m10 / moments.m00);
+        const float local_y = static_cast<float>(moments.m01 / moments.m00);
+
+        // 全图坐标 + Kalman 滤波
+        cv::Point2f measurement(local_x + roi_rect.x, local_y + roi_rect.y);
+        cv::Point2f filtered = predictAndUpdate(c, measurement, true);
+        filtered.x = std::max(0.0f, std::min(filtered.x,
+                              static_cast<float>(frame.cols - 1)));
+        filtered.y = std::max(0.0f, std::min(filtered.y,
+                              static_cast<float>(frame.rows - 1)));
+
+        DetectionResult dr;
+        dr.target_type = 1;                 // 1 = 颜色物块
+        dr.color_id    = slot;              // 协议值 1-6
+        dr.x           = static_cast<uint16_t>(filtered.x);
+        dr.y           = static_cast<uint16_t>(filtered.y);
+        results.push_back(dr);
     }
 
-    // 按面积选取最大轮廓
-    auto largest = std::max_element(
-        contours.begin(), contours.end(),
-        [](const std::vector<cv::Point>& a,
-           const std::vector<cv::Point>& b) {
-            return cv::contourArea(a) < cv::contourArea(b);
-        });
-
-    if (cv::contourArea(*largest) < min_area) {
-        on_lost();
-        return results;
-    }
-
-    // 计算质心
-    auto moments = cv::moments(*largest);
-    if (std::abs(moments.m00) < 1e-6) {
-        on_lost();
-        return results;
-    }
-
-    const float local_x = static_cast<float>(moments.m10 / moments.m00);
-    const float local_y = static_cast<float>(moments.m01 / moments.m00);
-
-    // 转换到全图坐标 + Kalman 滤波
-    cv::Point2f measurement(local_x + roi_rect.x, local_y + roi_rect.y);
-    cv::Point2f filtered = predictAndUpdate(color_idx, measurement, true);
-
-    // 裁剪到有效范围
-    filtered.x = std::max(0.0f, std::min(filtered.x,
-                          static_cast<float>(frame.cols - 1)));
-    filtered.y = std::max(0.0f, std::min(filtered.y,
-                          static_cast<float>(frame.rows - 1)));
-
-    DetectionResult dr;
-    dr.target_type = 1;                 // 1 = 颜色物块
-    dr.color_id    = target;            // 外部值 1-6（协议值，不做转换）
-    dr.x           = static_cast<uint16_t>(filtered.x);
-    dr.y           = static_cast<uint16_t>(filtered.y);
-    results.push_back(dr);
-
+    setDebugImage(combined_debug);
     return results;
 }
 
 // ========================================================================
-// 模式1 —— 多圆环数字识别（同心环剥除 + 归一化位图多角度 IoU）
+// 模式1 —— 多圆环数字识别（同心环剥除 + 归一化位图多角度 IoU）「优先级单包」
 // ========================================================================
 // 流水线：ROI → Gray → GaussianBlur → adaptiveThreshold →
 //          MORPH_OPEN → findContours(RETR_EXTERNAL) → 面积过滤 →
@@ -429,15 +396,22 @@ std::vector<DetectionResult> VisionPipeline::processMode0(
 //          逐环：moments 圆心 + minEnclosingCircle 半径 → 中心方形数字 ROI →
 //          数字自适应二值化 → 开运算剥同心细环(核∝半径) →
 //          取靠近圆心的最大墨块 → 归一化位图与多角度模板比 IoU(取最大) →
-//          同编号冲突整帧丢弃 → 按 TARGET 取指定编号 → Kalman → 输出单包
+//          统一出口按优先级 2 > 1 > 3 只推一包：检出→真实坐标；
+//          未检出但未超时→预测坐标；三者都不可用→ type=0 0 值包
 //
 // **关键特性**：
 //   - 视野内可同时出现多个圆环，各自识别数字编号
+//   - **每帧只推 1 包**：按优先级 2 > 1 > 3 取第一个可用环号（Kalman key = 环号）
+//       本帧识别到        → {type=2, color_id=环号, 滤波坐标}
+//       未识别但未超时    → {type=2, color_id=环号, 预测坐标}
+//       三者都不可用      → {type=0, color_id=2, 0, 0}
+//     选择严格按环号（环2 的预测坐标可以压过环1 的真实检出）；
+//     后两种由 serial.enable_no_target_frame 控制（关闭时只播报真实检出）
 //   - 形状过滤先剔掉线状/条状/方形干扰，避免它们占用 max_rings_per_frame
 //     名额把真靶标挤出前 N（如贯穿画面的桌边线、背景板/方形纸片）
 //   - 同一物理靶标的同心环是断开的独立轮廓 → 嵌套去重后只留最大外环，
 //     保证「一个物理靶标 = 一个候选」，不会误触发丢帧
-//   - 仅输出 TARGET 指定编号的圆环；TARGET=0 时圆环空闲（不检测、不输出）
+//   - 同编号冲突（两个环判成同一编号）→ 该环号按"未检出"处理，其余环号照常
 //   - 靶标为"中心数字 + 多层同心细环"；开核按半径缩放，距离无关地剥环
 //   - 数字匹配改用"按外接框归一化的二值位图 + 多角度模板 IoU"
 //     （旧 cv::matchShapes/Hu矩 实机验证不可用：见 loadDigitTemplates 注释）
@@ -446,22 +420,6 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
     const cv::Mat& frame) {
     std::vector<DetectionResult> results;
     auto& cfg = ConfigManager::instance();
-
-    const uint8_t target = current_target_.load();
-
-    // ---- TARGET=0：圆环空闲，不检测 ------------------------------------
-    if (target == 0) {
-        setLastDetectedRings({});
-        if (cfg.serialEnableNoTargetFrame()) {
-            DetectionResult dr;      // 无目标帧（Color=0）
-            dr.target_type = 0;
-            dr.color_id    = 0;
-            dr.x           = 0;
-            dr.y           = 0;
-            results.push_back(dr);
-        }
-        return results;
-    }
 
     // ---- 数字模板懒加载（仅一次）--------------------------------------
     if (!digit_templates_loaded_) {
@@ -588,11 +546,8 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
     }
     if (area_filtered.empty()) {
         setLastDetectedRings({});
-        // 无满足面积阈值的圆环 → 推进 Kalman（未超时发预测坐标，超时发无目标帧）
-        const cv::Point2f pred =
-            predictAndUpdate(target, cv::Point2f(0, 0), false);
-        pushLostOrNoTarget(results, target, 2, target, pred,
-                           frame.cols, frame.rows);
+        // 无任何候选圆环 → 走统一出口（三个环按"未检出"推进，只推优先级最高的一包）
+        reportMode1Rings(results, {}, frame.cols, frame.rows);
         return results;
     }
 
@@ -668,11 +623,8 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
 
     if (valid_contours.empty()) {
         setLastDetectedRings({});
-        // 全部候选都被形状过滤掉 → 同上
-        const cv::Point2f pred =
-            predictAndUpdate(target, cv::Point2f(0, 0), false);
-        pushLostOrNoTarget(results, target, 2, target, pred,
-                           frame.cols, frame.rows);
+        // 全部候选都被形状过滤掉 → 同样走统一出口
+        reportMode1Rings(results, {}, frame.cols, frame.rows);
         return results;
     }
 
@@ -733,91 +685,99 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
     // 供 UI 绘制所有圆环（含冲突帧 —— 便于现场定位丢帧原因）
     setLastDetectedRings(rings);
 
-    if (rings.empty()) {
-        // 所有候选数字识别均失败 → 等效未检出
-        const cv::Point2f pred =
-            predictAndUpdate(target, cv::Point2f(0, 0), false);
-        pushLostOrNoTarget(results, target, 2, target, pred,
-                           frame.cols, frame.rows);
-        return results;
-    }
+    // ---- 统一出口：按优先级 2 > 1 > 3 只推一包 --------------------------
+    reportMode1Rings(results, rings, frame.cols, frame.rows);
+    return results;
+}
 
-    // ---- 同编号冲突检测：同一编号出现两次 → 抛弃整帧结果 ----------------
+// ========================================================================
+// 模式1 —— 统一出口：按优先级 2 > 1 > 3 只推一包
+// ========================================================================
+// 三个环的 Kalman 每帧都推进（命中→校正并记下滤波坐标；未命中→只推进丢失
+// 计数），保证优先级链切换时状态新鲜；但**只推优先级最高的那一个可用环号**：
+//   ① 本帧真实检出           → {type=2, color_id=环号, 滤波坐标}
+//   ② 未检出但跟踪器未超时     → {type=2, color_id=环号, 预测坐标}
+//   ③ 三个都不可用（冷启动/全超时）→ {type=0, color_id=2, 0, 0}（0 值包）
+// 选择**严格按环号**：环2 的预测坐标可以压过环1 的真实检出。
+// ②③ 受 serial.enable_no_target_frame 控制（关闭时只推真实检出）。
+// 同编号冲突（两个环判成同一编号）→ 该环号本帧视为"未检出"，其余环号照常。
+// ========================================================================
+void VisionPipeline::reportMode1Rings(
+    std::vector<DetectionResult>& results,
+    const std::vector<RingDetection>& rings,
+    int frame_cols, int frame_rows) {
+    auto& cfg = ConfigManager::instance();
+
+    // ---- 同编号冲突：某环号被判成两次 → 该环号本帧按"未检出"处理 ---------
+    bool dup[4] = {false, false, false, false};   // 索引 = 环号 1-3
     for (size_t i = 0; i < rings.size(); ++i) {
         for (size_t j = i + 1; j < rings.size(); ++j) {
             if (rings[i].digit_id == rings[j].digit_id) {
-                LOG_WARN("模式1：检测到重复数字编号 %d，丢弃本帧",
+                LOG_WARN("模式1：检测到重复数字编号 %d，该环号本帧按未检出处理",
                          rings[i].digit_id);
-                const cv::Point2f pred =
-                    predictAndUpdate(target, cv::Point2f(0, 0), false);
-                pushLostOrNoTarget(results, target, 2, target, pred,
-                                   frame.cols, frame.rows);
-                return results;
-            }
-        }
-    }
-
-    // ---- 按 TARGET 筛选 ------------------------------------------------
-    const RingDetection* hit = nullptr;
-    for (const auto& r : rings) {
-        if (r.digit_id == target) {
-            hit = &r;
-            break;
-        }
-    }
-    if (!hit) {
-        // TARGET 指定圆环未检出 → 推进 Kalman 丢失计数
-        const cv::Point2f pred =
-            predictAndUpdate(target, cv::Point2f(0, 0), false);
-
-        // 场景3a：Kalman 已超时/冷启动，且本帧识别到了**其他**圆环 →
-        // 为每个非 TARGET 圆环推一帧零位包（type=2, x=y=0，Color=该环编号），
-        // 语义是"识别到了这个圆环，但不是你要的那个，故不给坐标"；
-        // 此时**不推** type=0 心跳。
-        if (!kalman_trackers_[target].initialized &&
-            cfg.serialEnableNoTargetFrame()) {
-            bool any_other = false;
-            for (const auto& r : rings) {
-                if (r.digit_id == target) {
-                    continue;
+                if (rings[i].digit_id >= 1 && rings[i].digit_id <= 3) {
+                    dup[rings[i].digit_id] = true;
                 }
-                DetectionResult zr;
-                zr.target_type = 2;           // 2 = 圆环
-                zr.color_id    = r.digit_id;  // 该非 TARGET 圆环的编号
-                zr.x           = 0;           // 零位：坐标无效
-                zr.y           = 0;
-                results.push_back(zr);
-                any_other = true;
-            }
-            if (any_other) {
-                return results;
             }
         }
-
-        // 场景2（未超时 → TARGET 预测坐标）／场景3b（超时且无其他圆环 →
-        // type=0 心跳）／开关关闭（什么都不推），三种情况统一交给
-        // pushLostOrNoTarget 判定（其内部含开关判断与坐标钳制）
-        pushLostOrNoTarget(results, target, 2, target, pred,
-                           frame.cols, frame.rows);
-        return results;
     }
 
-    // ---- Kalman（key = TARGET 编号 1/2/3）------------------------------
-    cv::Point2f filtered = predictAndUpdate(target, hit->center, true);
+    // ---- 推进三个环的 Kalman（不管最后推哪个，状态都要新鲜）--------------
+    bool        detected[4]  = {false, false, false, false};
+    cv::Point2f filtered[4];      // 命中 → 滤波后坐标
+    cv::Point2f predicted[4];     // 未命中 → 仅预测值
+    for (uint8_t id = 1; id <= 3; ++id) {
+        const RingDetection* hit = nullptr;
+        if (!dup[id]) {
+            for (const auto& r : rings) {
+                if (r.digit_id == id) {
+                    hit = &r;
+                    break;
+                }
+            }
+        }
+        if (hit) {
+            cv::Point2f f = predictAndUpdate(id, hit->center, true);
+            f.x = std::max(0.0f, std::min(f.x,
+                          static_cast<float>(frame_cols - 1)));
+            f.y = std::max(0.0f, std::min(f.y,
+                          static_cast<float>(frame_rows - 1)));
+            filtered[id] = f;
+            detected[id] = true;
+        } else {
+            predicted[id] = predictAndUpdate(id, cv::Point2f(0, 0), false);
+        }
+    }
 
-    filtered.x = std::max(0.0f, std::min(filtered.x,
-                          static_cast<float>(frame.cols - 1)));
-    filtered.y = std::max(0.0f, std::min(filtered.y,
-                          static_cast<float>(frame.rows - 1)));
+    // ---- 按优先级 2 > 1 > 3 选出第一包 -----------------------------------
+    static const uint8_t kPriority[3] = {2, 1, 3};
+    const bool fill = cfg.serialEnableNoTargetFrame();
 
-    DetectionResult dr;
-    dr.target_type = 2;         // 2 = 圆环
-    dr.color_id    = target;    // 数字编号 1/2/3
-    dr.x           = static_cast<uint16_t>(filtered.x);
-    dr.y           = static_cast<uint16_t>(filtered.y);
-    results.push_back(dr);
+    for (uint8_t id : kPriority) {
+        if (detected[id]) {
+            DetectionResult dr;
+            dr.target_type = 2;                 // 2 = 圆环
+            dr.color_id    = id;                // 环号 1/2/3
+            dr.x           = static_cast<uint16_t>(filtered[id].x);
+            dr.y           = static_cast<uint16_t>(filtered[id].y);
+            results.push_back(dr);
+            return;
+        }
+        if (fill && kalman_trackers_[id].initialized) {
+            // 未超时 → 预测坐标（内部含开关判断与坐标钳制）
+            pushLostOrNoTarget(results, id, 2, id, predicted[id],
+                               frame_cols, frame_rows);
+            return;
+        }
+    }
 
-    return results;
+    // ---- 三个环都不可用（冷启动 / 全超时）→ 0 值包（Color=2）------------
+    // pushLostOrNoTarget 在开关关闭时不推任何东西；此处 tracker[2] 必为未初始化，
+    // 因此开关开启时它推的正是 {type=0, color_id=2, 0, 0}
+    if (fill) {
+        pushLostOrNoTarget(results, 2, 2, 2, cv::Point2f(0, 0),
+                           frame_cols, frame_rows);
+    }
 }
 
 // ========================================================================

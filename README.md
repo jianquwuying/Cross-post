@@ -127,23 +127,27 @@ CameraThread ──(单槽帧缓冲)──> ProcessThread ──(发送队列)�
 
 ## 视觉模式
 
-远端主控通过串口发送 `MODE0`–`MODE3` + `TARGET` 切换。模式或目标变化时 Kalman 滤波器全部重置。
+远端主控通过串口发送 `MODE0`–`MODE3` 切换（命令帧里的 `TARGET` 位**保留但被忽略**）。
+模式变化时 Kalman 滤波器全部重置。
 
-### 模式0 — TARGET 指定单色物块检测
+### 模式0 — 6 色物块「逐槽位快照」
 
-只识别串口 `TARGET` 指定的那一种颜色（与模式1 的"按 TARGET 精准输出"对齐），
-一帧只推一包，不再一次推 6 色结果。
+不再使用 `TARGET`。**每帧固定输出 6 包**，每个颜色一个槽位（协议值 1=红 … 6=青）：
 
-- `TARGET`：**0=空闲**（不检测，按开关发无目标帧），**1–6=红/黄/蓝/绿/黑/青**
-- 流水线：TARGET → ROI → BGR→HSV → 该颜色 `inRange`（红色双区间）→ 形态学开运算 → 轮廓 → 取最大面积 → `moments` 质心 → Kalman → 单包输出
-- **内部索引 0–5，外部（协议）值 1–6**：数组索引与 Kalman key 用 `TARGET-1`，
-  `DetectionResult.color_id` / 串口 `Color` 直接用外部值（1–6），SerialPort 层不做任何 ±1 转换
-- 未检出时按无目标帧机制推送（`type=0`，`Color=` 该颜色 1–6）
-- 二值化调试窗：当前 TARGET 颜色的**单通道掩码**（灰度，不再是 6 色 BGR 合成图）
+| 该槽位状态 | 推送 |
+|-----------|------|
+| 检出 | `type=1, Color=槽位, x, y`（Kalman 滤波后真实坐标） |
+| 未检出但 Kalman 未超时 | `type=1, Color=槽位, x_pred, y_pred`（预测坐标） |
+| 未超时复位 / 冷启动 | `type=0, Color=槽位, X=Y=0`（0 值包） |
 
-### 模式1 — 多圆环数字识别（同心环剥除 + 归一化位图多角度 IoU，TARGET 指定输出）
+- 后两种由 `serial.enable_no_target_frame` 总控（关闭时只播报真实检出）
+- 流水线（每色各跑一遍）：ROI → BGR→HSV → 该色 `inRange`（红色双区间）→ 形态学开运算 → 轮廓 → 取最大面积 → `moments` 质心 → Kalman → 该槽位一包
+- **内部索引 0–5，协议值 1–6**：数组索引 / Kalman key = 槽位-1；`color_id` 与串口 `Color` 直接用 1–6
+- 二值化调试窗：6 色掩码按各自色彩合成到黑底
 
-视野内可**同时出现多个圆环**，算法逐个识别数字编号，只输出串口命令中 `TARGET` 指定的那一个。靶标实物为「**中心衬线数字 1/2/3 + 多层同心细环**」的印章式图案；摄像头固定在机械臂上可能旋转。单环识别原理：
+### 模式1 — 多圆环数字识别（同心环剥除 + 归一化位图多角度 IoU）「优先级单包」
+
+视野内可**同时出现多个圆环**，算法逐个识别数字编号，然后按优先级 **环2 > 环1 > 环3** **每周期只推一包**。靶标实物为「**中心衬线数字 1/2/3 + 多层同心细环**」的印章式图案；摄像头固定在机械臂上可能旋转。单环识别原理：
 
 1. 提取圆环外轮廓，得圆心与半径；
 2. 中心方形裁剪（半宽 = `digit_roi_scale × 半径`）；
@@ -171,19 +175,21 @@ CameraThread ──(单槽帧缓冲)──> ProcessThread ──(发送队列)�
       → 取前 max_rings_per_frame 个 → 逐环识别数字（归一化位图多角度 IoU）
       → 单个环识别失败只跳过该环
       → 同编号冲突（同编号出现两次）→ 整帧丢弃（Kalman 计一次丢失）
-      → 按 TARGET 筛选 → 见下方「推送逻辑矩阵」
+      → 按优先级 2 > 1 > 3 只推一包，见下方「推送逻辑矩阵」
 ```
 
-**TARGET>0 时的推送逻辑矩阵**（由 `serial.enable_no_target_frame` 总控）：
+**推送逻辑矩阵**（每周期**恒定 1 包**；由 `serial.enable_no_target_frame` 总控）：
 
-| 场景 | TARGET 识别 | Kalman | 画面有其他圆环 | 推送 |
-|------|------------|--------|--------------|------|
-| 1 | ✅ | 正常 | 无关 | `type=2, color=TARGET, x, y`（真实滤波坐标） |
-| 2 | ❌ | **未超时** | 无关 | `type=2, color=TARGET, x_pred, y_pred`（预测坐标，保持连续）；**不推**其他环 |
-| 3a | ❌ | **已超时/冷启动** | ✅ N 个 | 为**每个**其他圆环推一帧 `type=2, color=该环编号, x=0, y=0`（零位包，不给坐标）；**不推** `type=0` |
-| 3b | ❌ | **已超时/冷启动** | ❌ 无 | `type=0, color=TARGET, x=0, y=0`（无目标帧） |
+| 优先级顺序 | 该环号状态 | 推送 |
+|-----------|-----------|------|
+| ① 环2 → ② 环1 → ③ 环3 | 本帧识别到 | `type=2, color=环号, x, y`（真实滤波坐标） |
+| 同上，同环号内 | 未出现但跟踪器未超时 | `type=2, color=环号, x_pred, y_pred`（预测坐标） |
+| 依次查完三个环号都不行 | 三个都冷启动/已超时 | `type=0, color=2, 0, 0`（0 值包） |
+| 同编号冲突（两个环判成同一编号） | — | 该环号按"未出现"处理，其余环号照常 |
 
-开关关闭时：场景 1 照常；场景 2/3a/3b 均**不推送任何包**。
+- 选择**严格按环号**：环2 的预测坐标可以压过环1 的真实检出（先按环号，再按"真假"）
+- 三个环的 Kalman 每帧都推进（即使最终不推送），保证优先级链切换时状态新鲜
+- 开关关闭时：只推真实检出（每周期 ≤1 包），无检出则一包不发
 
 - **形状过滤**（`enable_shape_filter`，默认开）：三道校验依次为
   ① `圆度 = 4π·面积/周长²`（`arcLength(c,true)`）剔线状干扰，
@@ -198,13 +204,11 @@ CameraThread ──(单槽帧缓冲)──> ProcessThread ──(发送队列)�
   判定"当前轮廓是已保留轮廓的嵌套碎片"需**同时**满足
   ① 包围盒被包含（坐标比较带 2px 容差）② 两轮廓圆心距 < `0.5 × 外环半径`；
   丢弃前者、只留最大外环 —— 保证「一个物理靶标 = 一个候选」。
-  加上圆心校验是为了避免两个独立靶标在画面上重叠时被误合并（那会直接导致 TARGET 找不到环）
-- `TARGET=0`：圆环空闲，不检测、不输出（`max_rings_per_frame` 不参与）
-- 成功 → `target_type=2`，`color_id=TARGET 编号(1/2/3)`，`x/y=滤波后圆心`；Kalman key 用 TARGET 编号
-- 只对 TARGET 指定圆环做 Kalman 更新；其他圆环即使检出也不进滤波器
-- **零位包**（`type=2` 且 `x=y=0`）：语义是"识别到该编号圆环、但不是 TARGET，坐标无效"；
-  与 `type=0`（无目标）独立。UI 不会绘制零位包（避免在 (0,0) 画圈）
-- 同编号冲突：整帧丢弃（优先级高于零位包），此时**不推**零位包
+  加上圆心校验是为了避免两个独立靶标在画面上重叠时被误合并
+- 成功 → `target_type=2`，`color_id=环号(1/2/3)`，`x/y=滤波后圆心`；**Kalman key = 环号**（1/2/3 各一个跟踪器）
+- 每周期只出一包（见上表）；`max_rings_per_frame: 3` 保证三个环号都可能被真实坐标填满
+- 同编号冲突：该环号按"未出现"处理（预测/0 值包），**不再整帧丢弃**
+- UI 不会绘制 `type=0` 的 0 值包（避免在 (0,0) 画圈）；预测坐标照常绘制
 - 二值化调试窗：所有已识别圆环的数字 ROI（剥环后）二值图，统一高度水平拼接；无有效数字时回退显示环级二值图
 
 数字模板（`templates/num1.png` / `num2.png` / `num3.png`）需为**正视角、纯白底黑字**的灰度图，程序首次进入模式1时自动加载一次。
@@ -236,10 +240,11 @@ python3 tools/capture_templates.py --image pic.jpg   # 从已有图片取图
 
 | 触发条件                       | 行为                                    |
 |-------------------------------|-----------------------------------------|
-| 模式切换（`MODE` 或 `TARGET` 变化）| **立即抢断发送**，重置计时器            |
+| 模式切换（`MODE` 变化）| **立即抢断发送**，重置计时器（`TARGET` 位已忽略） |
 | 距上次发送 ≥ `send_interval_ms`| 允许发送                                |
-| 无有效目标                     | 开启 `serial.enable_no_target_frame` 时发送**无目标帧**（`TargetType=0`）并按周期推送；关闭时什么都不发 |
-| 目标短暂丢失（Kalman 未超时）  | 发送 **Kalman 预测坐标**（`TargetType` 仍为 1/2/3），保证坐标连续；超时复位后才转无目标帧 |
+| 某槽位无目标                   | 模式0 每槽位照发一包（未超时=预测坐标、超时=`type=0` 0 值包）；模式1 按优先级 2>1>3 取第一个可用环号（同样"预测→0 值包"回落）；开关关闭时只发真实检出 |
+| 目标短暂丢失（Kalman 未超时）  | 发送 **Kalman 预测坐标**（`type` 不变），保证坐标连续；超时复位后转 `type=0` 0 值包 |
+| 每周期包数                     | 模式0 → 6 包（颜色 1–6 各一）、模式1 → **1 包**（优先级 2>1>3）、模式2/3 → 1 包（同周期内连发，包间 100µs） |
 | 同一帧连续多包                  | 包间 `sleep(100µs)` 防粘包               |
 
 ---
@@ -275,12 +280,10 @@ kf.measurementNoiseCov  = cv::Mat::eye(2, 2, CV_32F) * yaml_scalar;
 | 0    | `0xCD`   | 帧头                                                        |
 | 1    | `0x01`   | 命令类型                                                     |
 | 2    | `MODE`   | 0=颜色物块  1=圆环  2=圆柱  3=空闲                             |
-| 3    | `TARGET` | `MODE=0`：0=空闲，1–6=红/黄/蓝/绿/黑/青；<br>`MODE=1`：0=空闲，1–3=指定输出的圆环编号（不受颜色编号影响）；<br>`MODE=2/3`：忽略（内部强制为 0） |
+| 3    | `TARGET` | **保留但完全忽略**（不再校验、不参与任何判断）；主控可填任意值 |
 | 4    | `0xDC`   | 帧尾                                                        |
 
-校验：第 1 字节为 `0x01`、`MODE ≤ 3`、`TARGET ≤ 6`、帧尾为 `0xDC`，任一不满足则丢弃该帧并继续搜寻 `0xCD`；
-按模式的 TARGET 范围（模式0 ≤6、模式1 ≤3）由 `VisionPipeline::setMode` 处理，
-越界时**仍切换模式**并打 WARN，把 TARGET 当 0（空闲）。
+校验：第 1 字节为 `0x01`、`MODE ≤ 3`、帧尾为 `0xDC`，任一不满足则丢弃该帧并继续搜寻 `0xCD`。
 
 ### 发送 — 检测结果（9 字节）
 
@@ -293,17 +296,13 @@ kf.measurementNoiseCov  = cv::Mat::eye(2, 2, CV_32F) * yaml_scalar;
 | 0    | `0xCD`      | 帧头                                                       |
 | 1    | `0x06`      | 数据类型                                                   |
 | 2    | TargetType  | 0=**无目标帧**  1=颜色物块  2=圆环  3=圆柱                    |
-| 3    | Color       | 有目标时：模式0=**颜色 1–6**(1=红,2=黄,3=蓝,4=绿,5=黑,6=青)，模式1=TARGET 编号(1–3)；<br>无目标帧(0)时：模式0=丢失的颜色(1–6)，模式1=丢失的 TARGET 编号（TARGET=0 时为 0），模式2/3=0 |
+| 3    | Color       | **槽位编号**：模式0=颜色 1–6(1=红…6=青)，模式1=环号 1–3，模式2/3=0；<br>无论该槽位是真检出、预测坐标还是 `type=0` 0 值包，Color 都填该槽位编号 |
 | 4-5  | X           | `uint16_t` 大端序                                          |
 | 6-7  | Y           | `uint16_t` 大端序                                          |
 | 8    | `0xDC`      | 帧尾                                                       |
 
-- **无目标帧**：`X=Y=0`，`Color` 标识是哪个目标丢失；由 `serial.enable_no_target_frame`
-  控制（默认 `true`），用于让主控区分"视觉系统挂了"与"当前视野确实没目标"。
-  置 `false` 则完全回退（无目标不发、也不发预测坐标）
-- **非 TARGET 圆环零位包**：`TargetType=2` 且 `X=Y=0` —— 表示"识别到 `Color` 编号的圆环、
-  但它不是 TARGET，坐标无效"（模式1 专用；Kalman 超时/冷启动且画面有其他圆环时逐环各推一帧）
-- 模式0 每帧只推 TARGET 指定颜色的**一包**结果（不再逐色推 6 包）
+- **0 值包**：`TargetType=0` 且 `X=Y=0` —— 表示"`Color` 这个槽位当前没有目标"
+- 每周期包数：模式0 → 6 包（颜色 1–6）、模式1 → **1 包**（优先级 2>1>3 选一）、模式2/3 → 1 包
 - 接收端帧同步解析：搜寻 `0xCD` 后读固定长度，无效自动跳过
 - Debug 模式输出完整 HEX 日志
 
@@ -323,7 +322,7 @@ kf.measurementNoiseCov  = cv::Mat::eye(2, 2, CV_32F) * yaml_scalar;
 | `kalman`    | `process_noise_cov`, `measurement_noise_cov`, `init_frames`, `lost_frame_limit` |
 | `recording` | `record_mode`, `output_dir`, `fourcc`, `fps`                 |
 | `roi`       | `x`, `y`, `width`, `height`                                  |
-| `mode0`     | `min_contour_area`, `morph_kernel_size`, 6 色 HSV 双区间（识别的颜色由串口 TARGET 指定） |
+| `mode0`     | `min_contour_area`, `morph_kernel_size`, 6 色 HSV 双区间（6 色全检，TARGET 位已忽略） |
 | `mode1`     | `gaussian_kernel_size`, `adaptive_block_size`, `adaptive_c`, `min_contour_area`, `max_rings_per_frame`, `enable_shape_filter`, `min_circularity`, `max_aspect_ratio`, `min_fill_ratio`, `morph_open_kernel_size`, `digit_roi_scale`, `digit_open_ratio`, `digit_adaptive_block_ratio`, `invert_digit`, `digit_match_size`, `digit_match_angle_range`, `digit_match_angle_step`, `digit_min_margin`, `template_paths` |
 | `mode2`     | HSV 黑色阈值, `aspect_ratio_threshold`, `min_area`, `morph_kernel_size` |
 | `logging`   | `level`, `log_to_file`, `log_file_path`                       |
@@ -368,8 +367,8 @@ camera:
 | 空帧           | 返回 `nullopt`，调用方 sleep 1ms 后重试      |
 | 配置键缺失     | 立即 `exit(EXIT_FAILURE)` 并打印错误键名      |
 | 模式1 单环识别失败 | 跳过该圆环，继续处理其他圆环                    |
-| 模式1 同编号冲突 | 丢弃整帧，不发送，Kalman 计一次丢失              |
-| 模式1 TARGET 未检出 | 不发送，Kalman 计一次丢失                    |
+| 模式1 同编号冲突 | 该环号按"未出现"处理，其余环号照常参与优先级选择 |
+| 模式1 某环号无目标 | 按优先级 2>1>3 取第一个可用环号：未超时→预测坐标；三者都超时/冷启动→`type=0, color=2` 0 值包（开关关闭则只发真实检出） |
 | 模式1 靶标突然不输出（怀疑形状过滤误杀） | `mode1.enable_shape_filter: false` 一键回退；Debug 日志会打印被过滤轮廓的圆度/长宽比/填充率，据此下调 `min_circularity`、放宽 `max_aspect_ratio` 或下调 `min_fill_ratio` |
 
 ---

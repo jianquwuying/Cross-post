@@ -35,16 +35,13 @@ public:
     // 模式控制
     // -------------------------------------------------------------------
 
-    /// 设置当前模式（0–3）与圆环目标编号（0–3）。由 SerialThread 调用。
-    /// MODE 或 TARGET 任一变化时，排队一次完整的 Kalman 重置。
-    /// TARGET 仅 MODE=1 时生效（0=圆环空闲，1/2/3=指定编号）。
-    void setMode(uint8_t mode, uint8_t target);
+    /// 设置当前模式（0–3）。由 SerialThread 调用。
+    /// 模式变化时，排队一次完整的 Kalman 重置。
+    /// 注：串口命令里的 TARGET 位不再参与任何判断（帧格式保留但忽略）。
+    void setMode(uint8_t mode);
 
     /// 读取当前模式。由 ProcessThread 调用。
     uint8_t currentMode() const { return current_mode_.load(); }
-
-    /// 读取当前圆环目标编号。由 ProcessThread 调用。
-    uint8_t currentTarget() const { return current_target_.load(); }
 
     // -------------------------------------------------------------------
     // 帧处理
@@ -131,6 +128,17 @@ private:
                             float& radius,
                             cv::Mat& digit_binary) const;
 
+    /// 模式1 统一出口：先把环号 1/2/3 三个 Kalman 各推进一帧（保持状态新鲜），
+    /// 再按优先级 **2 > 1 > 3** 只推一包：
+    ///   ① 本帧真实检出 → Kalman 滤波坐标（type=2）
+    ///   ② 未检出但跟踪器未超时 → 预测坐标（type=2）
+    ///   ③ 三个都不可用 → {type=0, color_id=2, 0, 0}（0 值包）
+    /// 选择严格按环号（环2 的预测坐标可以压过环1 的真实检出）；
+    /// ②③ 受 serial.enable_no_target_frame 控制（关闭时只推真实检出）。
+    void reportMode1Rings(std::vector<DetectionResult>& results,
+                          const std::vector<RingDetection>& rings,
+                          int frame_cols, int frame_rows);
+
     void setLastDetectedRings(const std::vector<RingDetection>& rings);
 
     // ---- 模式2 ---------------------------------------------------------
@@ -138,7 +146,6 @@ private:
 
     // ---- 状态 ----------------------------------------------------------
     std::atomic<uint8_t>  current_mode_{3};          // 默认 = 空闲
-    std::atomic<uint8_t>  current_target_{0};        // 默认 = 圆环空闲
     std::atomic<bool>     pending_kalman_reset_{false};
 
     std::unordered_map<int, KalmanTracker> kalman_trackers_;

@@ -159,14 +159,12 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
     double process_fps    = 0.0;
     double latency_ms     = 0.0;
     int    current_mode   = 3;
-    uint8_t current_target = 0;
     size_t queue_depth    = 0;
     bool   serial_ok      = true;  // 占位
 
     // ---- 发送节流状态 ------------------------------------------------
     auto last_send_time = std::chrono::steady_clock::now();
     uint8_t last_sent_mode   = 3;   // 初始化为空闲模式
-    uint8_t last_sent_target = 0;   // 初始化为圆环空闲
 
     cv::Mat display_frame;
 
@@ -187,17 +185,15 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
 
         // ---- 视觉处理（始终全速运行，不降频）-------------------------
         auto results = pipeline.process(fd.image);
-        current_mode   = pipeline.currentMode();
-        current_target = pipeline.currentTarget();
+        current_mode = pipeline.currentMode();
 
         // ---- 发送节流判断 --------------------------------------------
         auto now = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                            now - last_send_time).count();
-        // (MODE, TARGET) 组合视为"当前模式"：任一变化都立即抢断发送
+        // 模式变化 → 立即抢断发送（TARGET 位已忽略，只看 MODE）
         bool mode_changed =
-            (static_cast<uint8_t>(current_mode) != last_sent_mode) ||
-            (current_target != last_sent_target);
+            (static_cast<uint8_t>(current_mode) != last_sent_mode);
 
         bool should_send = false;
         if (!results.empty() && mode_changed) {
@@ -215,8 +211,7 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
                 send_queue.push(r);
             }
             last_send_time = now;
-            last_sent_mode   = static_cast<uint8_t>(current_mode);
-            last_sent_target = current_target;
+            last_sent_mode = static_cast<uint8_t>(current_mode);
         }
 
         auto t_end = std::chrono::steady_clock::now();
@@ -235,7 +230,6 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
 
             if (ui_draw_enable) {
                 const auto& cfg = ConfigManager::instance();
-                const uint8_t ui_target = pipeline.currentTarget();
 
                 // 绘制 ROI 矩形
                 cv::Rect roi_rect(cfg.roiX(), cfg.roiY(),
@@ -243,14 +237,9 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
                 cv::rectangle(display_frame, roi_rect,
                               cv::Scalar(0, 255, 0), 1);
 
-                // 模式1：绘制本帧检测到的所有圆环
-                // TARGET 指定环 → 红色 + " TARGET"；其余环 → 黄色
+                // 模式1：绘制本帧检测到的所有圆环（TARGET 已取消，统一黄色）
                 for (const auto& ring : pipeline.getLastDetectedRings()) {
-                    const bool is_target = (ring.digit_id == ui_target);
-                    const cv::Scalar ring_color = is_target
-                        ? cv::Scalar(0, 0, 255)
-                        : cv::Scalar(0, 255, 255);
-
+                    const cv::Scalar ring_color(0, 255, 255);
                     const cv::Point rc(cvRound(ring.center.x),
                                        cvRound(ring.center.y));
                     cv::circle(display_frame, rc,
@@ -258,8 +247,7 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
                                ring_color, 2);
 
                     const std::string ring_label =
-                        "Ring " + std::to_string(ring.digit_id) +
-                        (is_target ? " TARGET" : "");
+                        "Ring " + std::to_string(ring.digit_id);
                     cv::putText(display_frame, ring_label,
                                 cv::Point(rc.x + 12, rc.y - 5),
                                 cv::FONT_HERSHEY_SIMPLEX,
@@ -332,11 +320,6 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
                 putStat(buf, cv::Scalar(255, 255, 0));
 
                 std::snprintf(buf, sizeof(buf),
-                              "Target: %d",
-                              static_cast<int>(current_target));
-                putStat(buf, cv::Scalar(255, 200, 0));
-
-                std::snprintf(buf, sizeof(buf),
                               "Queue: %zu", queue_depth);
                 putStat(buf, cv::Scalar(200, 200, 200));
 
@@ -383,7 +366,7 @@ static void serialLoop(SerialPort& serial,
             for (int i = 0; i < 8; ++i) {   // 每次迭代最多 8 条命令
                 auto cmd = serial.readCommand();
                 if (!cmd.has_value()) break;
-                pipeline.setMode(cmd.value().mode, cmd.value().target);
+                pipeline.setMode(cmd.value());
             }
         }
 

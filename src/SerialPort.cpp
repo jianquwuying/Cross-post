@@ -130,10 +130,10 @@ bool SerialPort::configurePort(int baudrate) {
 // ---------------------------------------------------------------------------
 // 协议：0xCD  0x01  MODE  TARGET  0xDC
 // 搜寻 0xCD 起始字节；找到后读取后续 4 字节。
-// 帧有效则返回 {MODE, TARGET}。
+// 帧有效则返回 MODE；**TARGET 位保留但被忽略**（不校验、不使用）。
 // 任何字节错误/缺失 → 重置并继续搜寻 0xCD。
 // ---------------------------------------------------------------------------
-std::optional<SerialCommand> SerialPort::readCommand() {
+std::optional<uint8_t> SerialPort::readCommand() {
     uint8_t byte;
 
     // 搜寻 0xCD 起始字节
@@ -171,24 +171,14 @@ std::optional<SerialCommand> SerialPort::readCommand() {
     }
 
     uint8_t mode   = buf[1];
-    uint8_t target = buf[2];
+    uint8_t target = buf[2];   // 仅用于日志，不参与任何判断
     if (mode > 3) {
         LOG_DEBUG("串口 RX：无效模式 %d", mode);
         return std::nullopt;
     }
-    if (target > 6) {
-        // 0-6 均合法（模式0：0=空闲 1-6=颜色；模式1：0=空闲 1-3=圆环编号）；
-        // 具体模式的范围校验由 VisionPipeline::setMode 处理
-        LOG_DEBUG("串口 RX：无效目标 %d", target);
-        return std::nullopt;
-    }
 
-    LOG_DEBUG("串口 RX：MODE%d TARGET%d", mode, target);
-
-    SerialCommand cmd;
-    cmd.mode   = mode;
-    cmd.target = target;
-    return cmd;
+    LOG_DEBUG("串口 RX：MODE%d (TARGET%d 忽略)", mode, target);
+    return mode;
 }
 
 // ---------------------------------------------------------------------------

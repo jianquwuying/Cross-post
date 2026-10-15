@@ -14,15 +14,6 @@
 #include <optional>
 #include <string>
 
-// ---------------------------------------------------------------------------
-// SerialCommand  —  远端主控下发的命令（5 字节帧的载荷）
-//   协议：0xCD  0x01  MODE  TARGET  0xDC
-// ---------------------------------------------------------------------------
-struct SerialCommand {
-    uint8_t mode;    // 0=颜色物块  1=圆环  2=圆柱  3=空闲
-    uint8_t target;  // 仅 MODE=1 有效：0=圆环空闲，1/2/3=指定圆环编号
-};
-
 class SerialPort {
 public:
     SerialPort()  = default;
@@ -43,8 +34,9 @@ public:
 
     /// 尝试从串口读取一个命令帧。
     /// 协议：0xCD  0x01  MODE  TARGET  0xDC  （5 字节）
-    /// 成功返回 {MODE, TARGET}，超时/无数据返回 std::nullopt。
-    std::optional<SerialCommand> readCommand();
+    /// **TARGET 位保留但被忽略**（不校验、不使用），成功返回 MODE，
+    /// 超时/无数据返回 std::nullopt。
+    std::optional<uint8_t> readCommand();
 
     /// 向串口写入检测结果（非阻塞）。
     /// 协议：0xCD  0x06  TargetType  Color  X_H  X_L  Y_H  Y_L  0xDC
