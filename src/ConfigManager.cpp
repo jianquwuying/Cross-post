@@ -221,6 +221,9 @@ double ConfigManager::mode1DigitRoiScale() const {
 double ConfigManager::mode1DigitOpenRatio() const {
     return getRequired<double>(config_["mode1"], "digit_open_ratio");
 }
+double ConfigManager::mode1DigitAdaptiveBlockRatio() const {
+    return getRequired<double>(config_["mode1"], "digit_adaptive_block_ratio");
+}
 bool ConfigManager::mode1InvertDigit() const {
     return getRequired<bool>(config_["mode1"], "invert_digit");
 }

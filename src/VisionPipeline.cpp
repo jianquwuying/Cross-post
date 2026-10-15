@@ -917,10 +917,21 @@ bool VisionPipeline::recognizeRingDigit(
     const int thresh_type = cfg.mode1InvertDigit()
                             ? cv::THRESH_BINARY
                             : cv::THRESH_BINARY_INV;
-    int dblock = std::min(digit_gray.cols, digit_gray.rows) / 3;
+    // 邻域 = ROI 短边 × digit_adaptive_block_ratio，且**必须随半径一起放大**：
+    // 邻域小于数字笔画宽度时，自适应阈值会把笔画内部判成背景（大块实心
+    // 前景被"掏空"），有效笔画宽度塌缩到 ≈ 邻域/2，随后被按半径缩放的
+    // 剥环开运算整个抹掉，表现为大半径（目标近 / 分辨率高）时数字识别
+    // 失败或判号错误。旧实现对邻域硬钳上界 63，与半径无关，大半径下必然
+    // 掏空；此处只保留"邻域不得超出 ROI 自身"这一物理约束。
+    const int dm = std::min(digit_gray.cols, digit_gray.rows);
+    int dblock = cvRound(cfg.mode1DigitAdaptiveBlockRatio() * dm);
     if (dblock % 2 == 0) dblock++;
     dblock = std::max(dblock, 15);
-    dblock = std::min(dblock, 63);
+    const int dmax = (dm % 2 == 0) ? dm - 1 : dm;   // 不超过 ROI 短边的最大奇数
+    dblock = std::min(dblock, dmax);
+    if (dblock < 3) {
+        return false;   // ROI 过小，无法可靠二值化
+    }
     cv::Mat digit_bin;
     cv::adaptiveThreshold(digit_gray, digit_bin, 255,
                           cv::ADAPTIVE_THRESH_GAUSSIAN_C,

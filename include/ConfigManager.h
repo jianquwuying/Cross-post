@@ -107,6 +107,7 @@ public:
 
     double mode1DigitRoiScale()        const;   // 数字 ROI 半宽 / 圆环半径
     double mode1DigitOpenRatio()       const;   // 数字区剥环开运算核 / 圆环半径
+    double mode1DigitAdaptiveBlockRatio() const; // 数字二值化邻域 / 数字ROI短边
     bool   mode1InvertDigit()          const;   // 数字二值化是否反色
     int    mode1MaxRingsPerFrame()     const;   // 每帧最多做数字识别的圆环数
     bool   mode1EnableShapeFilter()    const;   // 形状过滤开关
