@@ -977,10 +977,20 @@ bool VisionPipeline::recognizeRingDigit(
         double off = std::hypot(cxx - half, cyy - half) / half;
         if (off > 0.6) continue;                // 必须靠近 ROI 中心
 
-        cv::Rect bb = cv::boundingRect(c);
-        double aspect = static_cast<double>(bb.height) /
-                        std::max(bb.width, 1);
-        if (aspect < 0.7 || aspect > 3.5) continue;   // 排除横向环弧/长残块
+        // 长宽比用 minAreaRect（最小面积外接矩形）而非 boundingRect：
+        // boundingRect 是**轴对齐**的，同一个数字旋转后长宽比会随之改变 ——
+        // 数字"1"横过来（旋转约 90°）时被判成"过扁"而剔除，形成约
+        // 60°~110° 的旋转盲区。minAreaRect 跟随形状自身主方向，长宽比与
+        // 旋转无关。判据只取"长边/短边 ≤ 上限"，即可在任意姿态下剔除
+        // 线状环弧与长条残块（旧式的"下限 0.7"正是轴对齐假设的产物：
+        // 它只拦横向长条，对斜向长条完全无效）。
+        const cv::RotatedRect rr = cv::minAreaRect(c);
+        const double side_a = rr.size.width;
+        const double side_b = rr.size.height;
+        if (side_a < 1.0 || side_b < 1.0) continue;          // 退化形状
+        const double aspect =
+            std::max(side_a, side_b) / std::min(side_a, side_b);
+        if (aspect > 3.5) continue;                          // 剔除线状/长条
 
         if (a > digit_area ||
             (std::abs(a - digit_area) < 1e-6 && off < best_offset)) {
