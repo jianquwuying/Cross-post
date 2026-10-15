@@ -150,13 +150,18 @@ CameraThread ──(单槽帧缓冲)──> ProcessThread ──(发送队列)�
 3. 数字区自适应二值化后，用**随半径缩放的开运算核**（`digit_open_ratio × 半径`）把同心细环剥掉、只留粗数字笔画 —— 环线宽度与靶标半径成比例，故开核也随半径缩放，远近通用；
 4. 取靠近圆心的最大墨块作为数字轮廓；
 5. 数字墨块与模板都按外接框归一化成 `digit_match_size²` 二值位图，模板预生成多角度实例
-   （`±digit_match_angle_range`、步长 `digit_match_angle_step`），**取 IoU 最大者**判数字编号。
+   （`±digit_match_angle_range`、步长 `digit_match_angle_step`），**取 IoU 最大者**判数字编号；
+   若"最高 IoU − 次高 IoU < `digit_min_margin`"则**拒答**（该环不判号，宁可没有也不给错编号）。
 
 > **为什么不用 `cv::matchShapes`（Hu 矩）**：实机实测其 `CONTOURS_MATCH_I1` 距离对"笔画粗细 /
 > 渲染风格"极端敏感——真实相机的数字与任一模板的距离都是 **≈6**，而 2 与 3 两个模板之间只有
 > **1.2**，判号被风格差异主导（同一模板自身缩放 1.1× 就会产生 1.34 的距离）。表现为
 > 相机滚转 ±30° 即把 2 判成 3。改成归一化位图 IoU 后，同一姿态下正确数字 **0.70**、次优
 > **0.44**（≈2 倍裕量），旋转由多角度实例覆盖。
+>
+> **置信度门槛**：真机 3 号靶标 126 个样本（±90° 旋转 / 0.5~1.3 缩放 / 离焦模糊 / 0.7~1.3 亮度）
+> 中，正确判定的"最高−次高"裕量最小 **0.083**、中位 0.164，而唯一一例误判（严重离焦+过曝）
+> 裕量只有 **0.056**；取 `digit_min_margin: 0.07` 可剔除该误判且不损失任何正确判定。
 
 每帧的圆环处理顺序：
 
@@ -319,7 +324,7 @@ kf.measurementNoiseCov  = cv::Mat::eye(2, 2, CV_32F) * yaml_scalar;
 | `recording` | `record_mode`, `output_dir`, `fourcc`, `fps`                 |
 | `roi`       | `x`, `y`, `width`, `height`                                  |
 | `mode0`     | `min_contour_area`, `morph_kernel_size`, 6 色 HSV 双区间（识别的颜色由串口 TARGET 指定） |
-| `mode1`     | `gaussian_kernel_size`, `adaptive_block_size`, `adaptive_c`, `min_contour_area`, `max_rings_per_frame`, `enable_shape_filter`, `min_circularity`, `max_aspect_ratio`, `min_fill_ratio`, `morph_open_kernel_size`, `digit_roi_scale`, `digit_open_ratio`, `digit_adaptive_block_ratio`, `invert_digit`, `digit_match_size`, `digit_match_angle_range`, `digit_match_angle_step`, `template_paths` |
+| `mode1`     | `gaussian_kernel_size`, `adaptive_block_size`, `adaptive_c`, `min_contour_area`, `max_rings_per_frame`, `enable_shape_filter`, `min_circularity`, `max_aspect_ratio`, `min_fill_ratio`, `morph_open_kernel_size`, `digit_roi_scale`, `digit_open_ratio`, `digit_adaptive_block_ratio`, `invert_digit`, `digit_match_size`, `digit_match_angle_range`, `digit_match_angle_step`, `digit_min_margin`, `template_paths` |
 | `mode2`     | HSV 黑色阈值, `aspect_ratio_threshold`, `min_area`, `morph_kernel_size` |
 | `logging`   | `level`, `log_to_file`, `log_file_path`                       |
 

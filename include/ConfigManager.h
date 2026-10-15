@@ -112,6 +112,7 @@ public:
     int    mode1DigitMatchSize()       const;   // 数字匹配归一化位图边长（像素）
     int    mode1DigitMatchAngleRange() const;   // 多角度模板搜索范围（±度）
     int    mode1DigitMatchAngleStep()  const;   // 多角度模板搜索步长（度）
+    double mode1DigitMinMargin()       const;   // 判号置信度门槛（最高IoU-次高IoU）
     int    mode1MaxRingsPerFrame()     const;   // 每帧最多做数字识别的圆环数
     bool   mode1EnableShapeFilter()    const;   // 形状过滤开关
     double mode1MinCircularity()       const;   // 圆度下限 4π·面积/周长²

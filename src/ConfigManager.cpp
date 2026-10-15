@@ -236,6 +236,9 @@ int ConfigManager::mode1DigitMatchAngleRange() const {
 int ConfigManager::mode1DigitMatchAngleStep() const {
     return getRequired<int>(config_["mode1"], "digit_match_angle_step");
 }
+double ConfigManager::mode1DigitMinMargin() const {
+    return getRequired<double>(config_["mode1"], "digit_min_margin");
+}
 int ConfigManager::mode1MaxRingsPerFrame() const {
     return getRequired<int>(config_["mode1"], "max_rings_per_frame");
 }
