@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
-# autostart.sh — RaspberryPi5 视觉系统：开机自启动 + 看门狗（整合为一）
-#
-# 参考模板：Horizon_Rm_Vision_26_SP/autostart_V1.sh
+# autostart.sh — 26年第十二届工程实践与创新大赛（参赛作品）
+#                树莓派 5 视觉终端 visionpost：开机自启动 + 看门狗（整合为一）
 #
 # ── 子命令 ────────────────────────────────────────────────────────────────
 #   start    启动看门狗并监管 visionpost（无参数时默认 = start）
@@ -14,25 +13,27 @@
 #   doctor   环境自检：可执行文件 / 配置文件 / 串口 / 摄像头 / sudo 权限
 #   用法示例：bash scripts/autostart.sh [start|stop|restart|status|doctor] [config.yaml]
 #
-# ── 开机自启动（手动部署到“启动应用程序”）────────────────────────────────
+# ── 开机自启动（推荐使用 autostart-gui.sh）────────────────────────────────
 #   1. 打开「启动应用程序」(Startup Applications)
 #   2. 添加启动项，名称随意（例如：Visionpost）
-#   3. “命令”一栏粘贴下面这【一行】（开机后会自动弹出终端实时显示看门狗日志）：
+#   3. “命令”一栏填写下面这【一行】（必须为绝对路径）：
 #
-#       gnome-terminal --title="Visionpost 看门狗" -- bash $HOME/Cross-post/scripts/autostart.sh
+#       bash /home/r9/Cross-post/scripts/autostart-gui.sh
 #
-#       （本机已配置好该启动项：~/.config/autostart/gnome-terminal.desktop
-#         指向 /home/pi/Cross-post/scripts/autostart.sh）
+#       .desktop 的 Exec / 启动命令不经过 shell，$HOME、~ 都不会展开，
+#       必须写绝对路径；以上为本机示例，换机器时替换为实际项目路径。
+#       autostart-gui.sh 先尝试弹终端运行本脚本，失败则退化为后台运行。
 #   4. 保存。重启后即可自动运行。
 #
 # ── 停止 ──────────────────────────────────────────────────────────────────
-#   在弹出来的看门狗终端里按 Ctrl+C，或在任意终端执行：bash scripts/autostart.sh stop
+#   在弹出来的看门狗终端里按 Ctrl+C，或在项目根目录执行：
+#       bash scripts/autostart.sh stop
 #
 # ── 串口权限 ──────────────────────────────────────────────────────────────
-#   放权对象不再写死：优先使用 config/vision.yaml 的 serial.port，再自动扫描
+#   放权对象不写死：优先使用 config/vision.yaml 的 serial.port，再自动扫描
 #   /dev/ttyACM* /dev/ttyUSB* /dev/ttyCH341USB*（USB 转串口）。
 #   本机不用板载 UART（ttyAMA0/ttyAMA10），故不纳入放权范围。
-#   注：pi 用户不在 dialout 组，USB 串口必须放权才能打开。
+#   注：运行用户不在 dialout 组时，USB 串口必须放权才能打开。
 #   放权顺序：先试免密 sudo（sudo -n），失败再退回密码管道
 #   `echo <密码> | sudo -S chmod 666`；密码见下方 SUDO_PASS（本机为 1，
 #   可用环境变量 AUTOSTART_SUDO_PASS 覆盖）。
@@ -46,13 +47,13 @@ set -u
 # 可配置参数
 # ---------------------------------------------------------------------------
 SUDO_PASS="${AUTOSTART_SUDO_PASS:-1}"  # sudo 密码（改密码请改本行，或用环境变量覆盖）
-SEC=2                                  # 崩溃后重启间隔（秒）
+SEC=2                                  # 快速崩溃后的重启间隔（秒）
 PROGRAM='visionpost'
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${PROJECT_DIR}/build"
 EXEC="${BUILD_DIR}/${PROGRAM}"
 CONFIG="${PROJECT_DIR}/config/vision.yaml"
-MAX_RESTARTS=10                        # 连续快速崩溃上限（超过 → 放弃自动重启）
+MAX_RESTARTS=10                        # 连续快速崩溃上限（超过即放弃，最多自动重启 10 次）
 STABLE_UPTIME_S=30                     # 上次存活 ≥ 此秒数视为“已恢复”，清零崩溃计数
 # 串口放权范围：config/vision.yaml 的 serial.port + 以下通配扫描（不存在则跳过）
 # 本机使用 USB 转串口（/dev/ttyACM0），不使用板载 UART，故不含 /dev/ttyAMA*
@@ -114,7 +115,7 @@ vp_running() {                           # 是否存在"非僵尸"的 visionpost
     return 1
 }
 
-cleanup() {                              # EXIT trap：停掉子进程 + 清理 pid 文件
+cleanup() {                              # EXIT trap：停后台 sleep、优雅停止子进程、清理 pid 文件
     if [[ "${bg_sleep_pid}" != "0" ]]; then
         kill -9 "${bg_sleep_pid}" 2>/dev/null
         bg_sleep_pid=0
@@ -143,7 +144,7 @@ sudo_run() {                             # 先免密 sudo，失败再退回密�
     echo "${SUDO_PASS}" | sudo -S "$@" 2>/dev/null
 }
 
-config_serial_port() {                   # 读 YAML 的 serial.port（最权威来源）
+config_serial_port() {                   # 读配置文件中第一个 port: 键（即 serial.port，最权威来源）
     [[ -f "${CONFIG}" ]] || return 0
     sed -n 's/^[[:space:]]*port:[[:space:]]*"\{0,1\}\([^"#[:space:]]*\)"\{0,1\}.*/\1/p' \
         "${CONFIG}" 2>/dev/null | head -1
@@ -215,7 +216,7 @@ run_watchdog() {
     # 每次看门狗启动重建程序输出日志（避免无限增长，便于查看本次运行的问题）
     : >"${APP_LOG}"
     log "程序输出将显示在本终端，同时记录到 ${APP_LOG}"
-    cd "${BUILD_DIR}"                    # 与 README 一致，yaml 内相对路径以 build 为基准
+    cd "${BUILD_DIR}"                    # 以 build/ 为工作目录：yaml 内相对路径（模板/录制等）以此为基准
 
     while :; do
         # 与外部手动启动的 visionpost 冲突检测（本脚本拉起的子进程不计）
@@ -260,7 +261,7 @@ run_watchdog() {
         fi
         log "${PROGRAM} 已退出 (code=${rc}, 存活 ${uptime}s, 快速崩溃 x${crash_streak})"
 
-        # 快速崩溃时把程序最后几行输出写进日志（原来只记退出码，看不出原因）
+        # 快速崩溃时把程序最后几行输出写进日志，便于定位退出原因
         if (( uptime < STABLE_UPTIME_S )); then
             log_app_tail
         fi
@@ -268,7 +269,7 @@ run_watchdog() {
         if (( crash_streak > MAX_RESTARTS )); then
             log "连续快速崩溃超过 ${MAX_RESTARTS} 次，放弃自动重启。"
             log "处理：按 Ctrl+C 关闭本终端，排障后重新运行；或执行 bash scripts/autostart.sh start"
-            # 若希望改成“整机重启”兜底，取消下面一行的注释（需已配置免密 sudo）：
+            # 若希望改成“整机重启”兜底，取消下面一行的注释（使用 SUDO_PASS 密码管道）：
             # echo "${SUDO_PASS}" | sudo -S reboot
             while :; do interruptible_sleep 3600; done    # 保持终端打开，且可被 stop/Ctrl+C 打断
         fi
@@ -337,7 +338,7 @@ cmd_doctor() {
     if [[ -x "${BUILD_DIR}/${PROGRAM}" ]]; then
         echo "可执行文件  : 存在 (${EXEC})"
     else
-        echo "可执行文件  : 缺失 —— 先编译：cd ${PROJECT_DIR}/build && cmake .. && make -j4"
+        echo "可执行文件  : 缺失 —— 先编译：mkdir -p ${PROJECT_DIR}/build && cd ${PROJECT_DIR}/build && cmake .. && make -j4"
     fi
     echo "配置文件    : $([[ -f "${CONFIG}" ]] && echo "存在 (${CONFIG})" || echo "缺失 (${CONFIG})")"
 
@@ -352,7 +353,7 @@ cmd_doctor() {
         fi
     fi
     echo "扫描到串口  : $(serial_devices | sort -u | tr '\n' ' ')"
-    echo "  （USB 转串口；pi 不在 dialout 组，由看门狗自动放权。不用板载 UART）"
+    echo "  （USB 转串口；运行用户不在 dialout 组时由看门狗自动放权。不使用板载 UART）"
 
     local cam f name
     cam="$(for f in /sys/class/video4linux/*/name; do
@@ -414,7 +415,7 @@ main "$@"
 #   然后执行：sudo udevadm control --reload-rules
 #   之后插拔串口即自动放权，可移除脚本内的 SUDO_PASS / fix_serial 逻辑。
 #
-#   一键写入（本机已确认 sudo 密码为 1）：
+#   一键写入（本机默认 SUDO_PASS=1，可用 AUTOSTART_SUDO_PASS 覆盖）：
 #     echo 1 | sudo -S bash -c 'cat > /etc/udev/rules.d/99-visionpost.rules <<EOF
 #     KERNEL=="ttyACM[0-9]*", MODE="0666"
 #     KERNEL=="ttyUSB[0-9]*", MODE="0666"

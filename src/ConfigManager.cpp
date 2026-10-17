@@ -1,6 +1,9 @@
 // ============================================================================
 // ConfigManager.cpp  —  YAML 配置实现
 // ============================================================================
+// 每个访问器都直接读取 config_ 中对应节点的键；没有硬编码默认值。
+// 键缺失或类型不符时由 getRequired() 记录 ERROR 并退出进程。
+// ============================================================================
 
 #include "ConfigManager.h"
 #include "Logger.h"
@@ -197,7 +200,7 @@ int ConfigManager::mode0MorphKernelSize() const {
     return getRequired<int>(config_["mode0"], "morph_kernel_size");
 }
 // ---------------------------------------------------------------------------
-// 模式1
+// 模式1  —  多圆环数字识别（归一化二值位图 + 多角度 IoU 模板匹配）
 // ---------------------------------------------------------------------------
 int ConfigManager::mode1GaussianKernelSize() const {
     return getRequired<int>(config_["mode1"], "gaussian_kernel_size");
@@ -215,6 +218,7 @@ int ConfigManager::mode1MorphOpenKernelSize() const {
     return getRequired<int>(config_["mode1"], "morph_open_kernel_size");
 }
 
+// ---- 数字级参数：裁 ROI、剥环、二值化（邻域随半径缩放）-------------------
 double ConfigManager::mode1DigitRoiScale() const {
     return getRequired<double>(config_["mode1"], "digit_roi_scale");
 }
@@ -227,6 +231,7 @@ double ConfigManager::mode1DigitAdaptiveBlockRatio() const {
 bool ConfigManager::mode1InvertDigit() const {
     return getRequired<bool>(config_["mode1"], "invert_digit");
 }
+// ---- 判号参数：归一化二值位图 + 多角度模板 IoU + 置信度门槛 ----------------
 int ConfigManager::mode1DigitMatchSize() const {
     return getRequired<int>(config_["mode1"], "digit_match_size");
 }

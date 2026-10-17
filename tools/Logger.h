@@ -2,13 +2,15 @@
 // ============================================================================
 // Logger.h  —  彩色控制台 + 文件双通道日志（单例，线程安全）
 // ============================================================================
-// 控制台：ANSI 彩色（INFO=绿 WARN=黄 ERROR=红 DEBUG=蓝）
-// 文件：  纯文本，无 ANSI 转义码
+// 控制台：ANSI 彩色（INFO=绿 WARN=黄 ERROR=红 DEBUG=蓝），每条后立即 fflush。
+// 文件：  纯文本，无 ANSI 转义码；每条后立即 flush，崩溃时尽量保留日志。
+// 级别：  LOG_DEBUG 仅在编译期定义 DEBUG 时生效（CMake Debug 构建带 -DDEBUG），
+//         其余构建中展开为空操作，不输出日志。
 //
 // 用法：
-//   Logger::instance().init(true, "../vision.log");   // main() 启动时
-//   LOG_INFO("xxx");                                   // 任意位置直接使用
-//   Logger::instance().shutdown();                     // main() 退出时
+//   Logger::instance().init(cfg.logToFile(), cfg.logFilePath());  // main() 启动时
+//   LOG_INFO("xxx");                                              // 任意位置直接使用
+//   Logger::instance().shutdown();                                // main() 退出时
 // ============================================================================
 
 #include <cstdarg>
@@ -31,15 +33,16 @@ class Logger {
 public:
     static Logger& instance();
 
-    /// 初始化文件日志。to_file=true 时打开 path 指定的文件。
-    /// path 支持相对路径（从工作目录解析）。
+    /// 初始化文件日志。to_file=true 且 path 非空时，以追加模式打开 path。
+    /// 仅第一次调用生效（已初始化则直接返回）；相对路径按工作目录解析。
+    /// 打开成功会写入启动标记；打开失败只在控制台打印错误，程序继续运行。
     void init(bool to_file, const std::string& path);
 
-    /// 关闭文件流。
+    /// 写入结束标记并关闭文件流（未打开时无操作）。
     void shutdown();
 
-    /// 核心输出：同时写入控制台（带颜色）和文件（纯文本）。
-    /// 线程安全。
+    /// 核心输出：用 1024 字节缓冲区格式化后，同时写控制台（带颜色）和文件
+    /// （纯文本）。控制台与文件输出在同一把 mutex 内完成，多线程不会交错。
     void log(const char* color, const char* level,
              const char* fmt, ...);
 
@@ -57,7 +60,7 @@ private:
 };
 
 // ============================================================================
-// 便捷宏 —— 与旧代码完全兼容
+// 便捷宏 —— 统一级别标签与颜色
 // ============================================================================
 #define LOG_INFO(fmt, ...)  \
     Logger::instance().log(COLOR_GREEN,  "INFO",  fmt, ##__VA_ARGS__)
@@ -72,6 +75,7 @@ private:
 #define LOG_DEBUG(fmt, ...) \
     Logger::instance().log(COLOR_BLUE,   "DEBUG", fmt, ##__VA_ARGS__)
 #else
+// Release 构建：LOG_DEBUG 展开为空操作，不输出日志
 #define LOG_DEBUG(fmt, ...) ((void)0)
 #endif
 
@@ -118,7 +122,7 @@ inline void Logger::shutdown() {
 
 inline void Logger::log(const char* color, const char* level,
                          const char* fmt, ...) {
-    // ---- 格式化消息 ----------------------------------------------------
+    // ---- 格式化消息（超长消息由 vsnprintf 截断）------------------------
     char msg_buf[1024];
     va_list args1;
     va_start(args1, fmt);

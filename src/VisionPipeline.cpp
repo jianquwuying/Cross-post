@@ -134,7 +134,7 @@ cv::Point2f VisionPipeline::predictAndUpdate(int key,
         trk.lost_count++;
 
         if (trk.lost_count >= cfg.kalmanLostFrameLimit()) {
-            // ---- 超时复位：statePost = statePre（防止漂移）-----------
+            // ---- 超时复位：statePost = statePre（同步最后状态）-------
             trk.kf.statePost = trk.kf.statePre.clone();
             trk.initialized  = false;
             trk.stable_count = 0;
@@ -154,8 +154,8 @@ cv::Point2f VisionPipeline::predictAndUpdate(int key,
 // 供模式0/1/2 在"本帧未检出目标"时调用：
 //   · 开关关闭       → 不推任何结果（完全回退到"无目标不发送"）
 //   · 跟踪器已初始化 → 推送 Kalman 预测坐标（target_type 保持 detected_type），
-//                      保证主控侧坐标连续；这是外推值、会随时间漂移，
-//                      主控应结合时间窗口判断可信度
+//                      保证主控侧坐标连续；恒等转移矩阵下预测值等于最后一次
+//                      滤波状态，不会随时间外推（无速度分量）
 //   · 跟踪器未初始化 → 推送无目标帧 {target_type=0, color_id, x=0, y=0}
 //                      （含"冷启动从未捕获"与"超时复位"两种情况）
 // ========================================================================
@@ -237,10 +237,10 @@ std::vector<DetectionResult> VisionPipeline::process(const cv::Mat& frame) {
         case 0:  return processMode0(frame);
         case 1:  return processMode1(frame);
         case 2:  return processMode2(frame);
-        case 3: {   // 空闲：不检测、无跟踪目标
+        case 3: {   // 空闲：不检测；开关开启时每帧推 1 个无目标包
             std::vector<DetectionResult> results;
             if (ConfigManager::instance().serialEnableNoTargetFrame()) {
-                DetectionResult dr;      // 无目标帧（Color=0）
+                DetectionResult dr;      // 无目标帧（type=0, Color=0）
                 dr.target_type = 0;
                 dr.color_id    = 0;
                 dr.x           = 0;
@@ -256,12 +256,14 @@ std::vector<DetectionResult> VisionPipeline::process(const cv::Mat& frame) {
 // ========================================================================
 // 模式0 —— 6 色物块「逐槽位快照」
 // ========================================================================
-// 流水线：ROI → BGR→HSV → 逐色掩码 → 轮廓 → 质心 → Kalman 预测/更新
+// 流水线（每个颜色独立跑一遍）：ROI → BGR→HSV → 该色 inRange 掩码 →
+// MORPH_OPEN → findContours → 按面积选最大 → moments 质心 → Kalman
 //
-// **每帧固定输出 6 包**（槽位 = 颜色外部值 1=红 … 6=青，内部索引/Kalman key = 槽位-1）：
-//   检出            → {type=1, color_id=槽位, x, y}（Kalman 滤波后）
-//   未检出且未超时  → {type=1, color_id=槽位, x_pred, y_pred}（短时丢失顶住坐标）
-//   未超时复位/冷启动 → {type=0, color_id=槽位, 0, 0}（0 值包）
+// **每个槽位每帧至多输出 1 包**（槽位 = 颜色外部值 1=红 … 6=青，
+// 内部索引/Kalman key = 槽位-1）；开关开启时未检出槽位也补包，故固定 6 包：
+//   检出              → {type=1, color_id=槽位, x, y}（Kalman 滤波后；初始化前为原始测量值）
+//   未检出且未超时    → {type=1, color_id=槽位, x_pred, y_pred}（短时丢失顶住坐标）
+//   超时复位/冷启动   → {type=0, color_id=槽位, 0, 0}（0 值包）
 // 后两种由 serial.enable_no_target_frame 控制（关闭时只播报真实检出）。
 // 红色使用**双** HSV 区间（H 0-10 + H 170-180），通过 bitwise_or 合并。
 // ========================================================================
@@ -311,7 +313,7 @@ std::vector<DetectionResult> VisionPipeline::processMode0(
         cv::Scalar(255, 255, 0),   // 6 青
     };
 
-    // ---- 逐色 6 个槽位：每色各推一包 -----------------------------------
+    // ---- 逐色 6 个槽位：每色独立检测，至多推一包（丢失时按开关补包）-----
     for (int c = 0; c < kNumColors; ++c) {
         const uint8_t slot = static_cast<uint8_t>(c) + 1;   // 协议值 1-6
         const char* color_name = kColorNames[c];
@@ -389,14 +391,15 @@ std::vector<DetectionResult> VisionPipeline::processMode0(
 // ========================================================================
 // 模式1 —— 多圆环数字识别（同心环剥除 + 归一化位图多角度 IoU）「优先级单包」
 // ========================================================================
-// 流水线：ROI → Gray → GaussianBlur → adaptiveThreshold →
-//          MORPH_OPEN → findContours(RETR_EXTERNAL) → 面积过滤 →
-//          形状过滤(圆度 + minAreaRect 长宽比 + 填充率，剔除线状/方形干扰) → 按面积降序 →
-//          嵌套去重(包围盒包含 + 圆心距) → 取前 max_rings_per_frame 个 →
+// 流水线：ROI → Gray → GaussianBlur → adaptiveThreshold(GAUSSIAN_C, BINARY_INV) →
+//          MORPH_OPEN(ELLIPSE) → findContours(RETR_EXTERNAL) → 面积过滤 →
+//          形状过滤(圆度 + minAreaRect 长宽比 + 填充率，剔除线状/方形干扰) →
+//          按面积降序 → 嵌套去重(包围盒包含 + 圆心距) → 取前 max_rings_per_frame 个 →
 //          逐环：moments 圆心 + minEnclosingCircle 半径 → 中心方形数字 ROI →
-//          数字自适应二值化 → 开运算剥同心细环(核∝半径) →
-//          取靠近圆心的最大墨块 → 归一化位图与多角度模板比 IoU(取最大) →
-//          统一出口按优先级 2 > 1 > 3 只推一包：检出→真实坐标；
+//          数字自适应二值化(邻域 ∝ ROI 短边) → 开运算剥同心细环(核 ∝ 半径) →
+//          面积优先选最大墨块(须靠近圆心) → 归一化位图与多角度模板比 IoU(取最大) →
+//          最高/次高 IoU 差 < digit_min_margin → 拒答 →
+//          统一出口按优先级 2 > 1 > 3 只推一包：检出→Kalman 滤波坐标；
 //          未检出但未超时→预测坐标；三者都不可用→ type=0 0 值包
 //
 // **关键特性**：
@@ -410,18 +413,18 @@ std::vector<DetectionResult> VisionPipeline::processMode0(
 //   - 形状过滤先剔掉线状/条状/方形干扰，避免它们占用 max_rings_per_frame
 //     名额把真靶标挤出前 N（如贯穿画面的桌边线、背景板/方形纸片）
 //   - 同一物理靶标的同心环是断开的独立轮廓 → 嵌套去重后只留最大外环，
-//     保证「一个物理靶标 = 一个候选」，不会误触发丢帧
+//     保证「一个物理靶标 = 一个候选」，避免同一靶标占用多个候选名额
 //   - 同编号冲突（两个环判成同一编号）→ 该环号按"未检出"处理，其余环号照常
-//   - 靶标为"中心数字 + 多层同心细环"；开核按半径缩放，距离无关地剥环
-//   - 数字匹配改用"按外接框归一化的二值位图 + 多角度模板 IoU"
-//     （旧 cv::matchShapes/Hu矩 实机验证不可用：见 loadDigitTemplates 注释）
+//   - 靶标为"中心数字 + 多层同心细环"；开核按半径缩放，远近一致地剥环
+//   - 数字匹配使用"按外接框归一化的二值位图 + 多角度模板 IoU"
+//     （旧 cv::matchShapes/Hu矩 实机验证不可用，现已弃用：见下方实现注释）
 // ========================================================================
 std::vector<DetectionResult> VisionPipeline::processMode1(
     const cv::Mat& frame) {
     std::vector<DetectionResult> results;
     auto& cfg = ConfigManager::instance();
 
-    // ---- 数字模板懒加载（仅一次）--------------------------------------
+    // ---- 数字模板懒加载（首次成功后不再加载；失败则下一帧重试）----------
     if (!digit_templates_loaded_) {
         if (!loadDigitTemplates()) {
             LOG_ERROR("数字模板加载失败，模式1 无法运行");
@@ -451,7 +454,7 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
     cv::Mat blurred;
     cv::GaussianBlur(gray, blurred, cv::Size(gks, gks), 0);
 
-    // ---- 自适应阈值二值化（圆环区域转白，背景转黑）-------------------
+    // ---- 自适应阈值二值化（BINARY_INV：暗结构转白，亮背景转黑）---------
     int block_size = cfg.mode1AdaptiveBlockSize();
     if (block_size % 2 == 0) block_size++;
     int adaptive_c = cfg.mode1AdaptiveC();
@@ -473,7 +476,7 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
     // 真实反映"静止时圆环是否断裂/消失"，便于现场定位（数字路径随后覆盖）
     setDebugImage(binary);
 
-    // ---- 提取所有圆环轮廓（面积 ≥ min_contour_area）--------------------
+    // ---- 提取所有外部轮廓（随后按 min_contour_area 过滤）----------------
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(binary, contours,
                      cv::RETR_EXTERNAL,
@@ -495,10 +498,10 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
             continue;
         }
 
-        // ---- 形状过滤：圆度 + 长宽比双校验，剔除线状/条状/畸形干扰 --------
+        // ---- 形状过滤：圆度 + 长宽比 + 填充率三重校验，剔除线状/方形干扰 ----
         // 圆度 4π·面积/周长² 对线状干扰极敏感（实测桌边线 ≈0.02，圆环 ≈0.88）；
         // 长宽比取 minAreaRect（而非 boundingRect，避免旋转放大长宽比）。
-        // 两者互补：圆度剔线状，长宽比剔长条/畸形块。
+        // 三者互补：圆度剔线状，长宽比剔长条/畸形块，填充率剔方形/空心框。
         if (shape_filter_on) {
             const double perimeter = cv::arcLength(c, true);
             if (perimeter < 1e-6) {
@@ -560,7 +563,8 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
 
     // ---- 嵌套去重：同一物理靶标的同心环只保留最大外环 -------------------
     // 真机上同心圆环二值化后是断开的独立轮廓，一个物理靶标会产生多个候选
-    // （外环/中环/内环），必须去重，否则 TARGET 筛选会拿错环。
+    // （外环/中环/内环），必须去重，否则同一靶标会占用多个候选名额，
+    // 还可能因重复判号触发同编号冲突。
     // 判定"c 是 v 的嵌套碎片"需**同时**满足：
     //   ① c 的包围盒被 v 的包围盒包含（坐标比较带 2px 容差；
     //      不用 Rect::contains(rect.br()) —— OpenCV 的 br() 是排他坐标，
@@ -623,7 +627,7 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
 
     if (valid_contours.empty()) {
         setLastDetectedRings({});
-        // 全部候选都被形状过滤掉 → 同样走统一出口
+        // 全部候选都被过滤或去重掉 → 同样走统一出口
         reportMode1Rings(results, {}, frame.cols, frame.rows);
         return results;
     }
@@ -657,7 +661,7 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
         digit_tiles.push_back(digit_binary);
     }
 
-    // ---- 调试图：所有候选数字 ROI 二值图（统一高度水平拼接）------------
+    // ---- 调试图：所有成功判号圆环的数字 ROI 二值图（统一高度水平拼接）----
     if (!digit_tiles.empty()) {
         int tile_h = 0;
         for (const auto& t : digit_tiles) {
@@ -682,7 +686,8 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
         setDebugImage(binary);   // 无有效数字 → 回退显示环级二值图
     }
 
-    // 供 UI 绘制所有圆环（含冲突帧 —— 便于现场定位丢帧原因）
+    // 供 UI 绘制本帧所有完成判号的圆环（含同编号冲突的环；
+    // 冲突环号"按未检出处理"的逻辑在 reportMode1Rings 内完成）
     setLastDetectedRings(rings);
 
     // ---- 统一出口：按优先级 2 > 1 > 3 只推一包 --------------------------
@@ -693,9 +698,10 @@ std::vector<DetectionResult> VisionPipeline::processMode1(
 // ========================================================================
 // 模式1 —— 统一出口：按优先级 2 > 1 > 3 只推一包
 // ========================================================================
-// 三个环的 Kalman 每帧都推进（命中→校正并记下滤波坐标；未命中→只推进丢失
-// 计数），保证优先级链切换时状态新鲜；但**只推优先级最高的那一个可用环号**：
+// 三个环的 Kalman 每帧都推进（命中→校正并记下滤波坐标；未命中→仅预测并累计
+// 丢失计数），保证优先级链切换时状态新鲜；但**只推优先级最高的那一个可用环号**：
 //   ① 本帧真实检出           → {type=2, color_id=环号, 滤波坐标}
+//                              （跟踪器未初始化时即原始测量值）
 //   ② 未检出但跟踪器未超时     → {type=2, color_id=环号, 预测坐标}
 //   ③ 三个都不可用（冷启动/全超时）→ {type=0, color_id=2, 0, 0}（0 值包）
 // 选择**严格按环号**：环2 的预测坐标可以压过环1 的真实检出。
@@ -781,11 +787,13 @@ void VisionPipeline::reportMode1Rings(
 }
 
 // ========================================================================
-// 模式1 —— 数字模板加载（仅一次）
+// 模式1 —— 数字模板加载（首次成功后置位，失败则下一帧重试）
 // ========================================================================
-// 模板统一处理成"归一化实心字形位图"，并为每个数字预生成多个旋转角实例
-// （见 digit_match_angle_range / step）。判号时用位图 IoU 逐数字取最大，
-// 避免 cv::matchShapes(Hu矩) 对笔画粗细/渲染风格的极端敏感性。
+// 每个模板图（白底黑字）先经 OTSU 反色成"数字为白"，再由 normalizeGlyph
+// 归一化为 digit_match_size² 的实心字形位图；随后在 ±digit_match_angle_range
+// 内按 digit_match_angle_step 逐角度旋转并重新归一化，得到该数字的多角度
+// 位图实例。判号时对每个数字取所有实例中的最大 IoU，再在三数字间取 argmax。
+// 不用 cv::matchShapes(Hu矩)：实机验证其距离对笔画粗细/渲染风格极端敏感。
 // ========================================================================
 bool VisionPipeline::normalizeGlyph(const cv::Mat& bin, int size, cv::Mat& out) {
     std::vector<std::vector<cv::Point>> cnts;
@@ -890,9 +898,11 @@ bool VisionPipeline::loadDigitTemplates() {
 // 模式1 —— 单个圆环的数字识别（供多圆环循环复用）
 // ========================================================================
 // 步骤：moments 圆心 + minEnclosingCircle 半径 → 中心方形数字 ROI →
-//       自适应二值化 → 开运算剥同心细环(核 ∝ 半径) →
-//       取"靠近圆心的最大墨块" → 归一化位图 vs 多角度模板 IoU（取最大）
-// 任一阶段失败返回 false，调用方跳过该圆环（不影响其他圆环与 Kalman）。
+//       自适应二值化(邻域 ∝ ROI 短边) → 开运算剥同心细环(核 ∝ 半径) →
+//       面积优先选最大墨块(须靠近圆心) → 按外接框归一化位图 →
+//       与多角度模板逐一比 IoU（每个数字取最大）→ argmax 三选一 →
+//       最高/次高 IoU 差 < digit_min_margin → 拒答
+// 任一阶段失败或拒答返回 false，调用方跳过该圆环（不影响其他圆环与 Kalman）。
 // ========================================================================
 bool VisionPipeline::recognizeRingDigit(
     const cv::Mat& blurred,
@@ -920,8 +930,9 @@ bool VisionPipeline::recognizeRingDigit(
     }
 
     // ---- 数字 ROI：中心方形裁剪（半宽 = digit_roi_scale × 半径）---------
-    // 靶标是"中心数字 + 多层同心细环"。取 0.5~0.75 的通用裁剪：
-    // 太小会裁到数字（数字几乎与最内圈同大），太大会把外圈细环框进来。
+    // 靶标是"中心数字 + 多层同心细环"。半宽取 digit_roi_scale × 半径
+    // （当前配置 0.5）：太小会切掉数字笔画（数字几乎与最内圈同大），
+    // 太大会把外圈细环框进来。
     const int half =
         cvRound(static_cast<double>(cfg.mode1DigitRoiScale()) * r);
     if (half < 8) {
@@ -937,7 +948,9 @@ bool VisionPipeline::recognizeRingDigit(
     // 与环级自适应阈值同源，结果更稳定
     cv::Mat digit_gray = blurred(digit_rect);
 
-    // ---- 数字二值化（自适应阈值；暗结构为白前景，抗光照渐变）------------
+    // ---- 数字二值化（自适应阈值，抗光照渐变）----------------------------
+    // 默认（invert_digit=false）暗结构为白前景；invert_digit=true 时改为
+    // 亮结构为白前景。
     const int thresh_type = cfg.mode1InvertDigit()
                             ? cv::THRESH_BINARY
                             : cv::THRESH_BINARY_INV;
@@ -946,7 +959,8 @@ bool VisionPipeline::recognizeRingDigit(
     // 前景被"掏空"），有效笔画宽度塌缩到 ≈ 邻域/2，随后被按半径缩放的
     // 剥环开运算整个抹掉，表现为大半径（目标近 / 分辨率高）时数字识别
     // 失败或判号错误。旧实现对邻域硬钳上界 63，与半径无关，大半径下必然
-    // 掏空；此处只保留"邻域不得超出 ROI 自身"这一物理约束。
+    // 掏空；此处以 ROI 短边为上限（物理约束），另设下限 15 避免小 ROI 下
+    // 邻域过小，并保证取不超过 ROI 短边的奇数。
     const int dm = std::min(digit_gray.cols, digit_gray.rows);
     int dblock = cvRound(cfg.mode1DigitAdaptiveBlockRatio() * dm);
     if (dblock % 2 == 0) dblock++;
@@ -965,7 +979,7 @@ bool VisionPipeline::recognizeRingDigit(
     // ---- 开运算剥掉同心细环（核随半径缩放）------------------------------
     // 数字笔画粗、圆环线细；环线宽度与靶标半径成比例(随距离变化)，
     // 故开核取 digit_open_ratio × 半径，才能在远近一致地把细环剥掉、
-    // 保留粗数字笔画。实测 ratio=0.05 通解。
+    // 保留粗数字笔画。实测 ratio=0.04 通解（当前配置值）。
     int do_ksize =
         cvRound(static_cast<double>(cfg.mode1DigitOpenRatio()) * r);
     if (do_ksize < 3) do_ksize = 3;
@@ -975,9 +989,10 @@ bool VisionPipeline::recognizeRingDigit(
     cv::morphologyEx(digit_bin, digit_bin, cv::MORPH_OPEN, do_kernel);
 
     // ---- 数字轮廓：取"靠近圆心的最大墨块" ------------------------------
-    // 剥环后 ROI 内数字是唯一的粗结构。按面积最大者取整（面积优先、次中心近），
-    // 用面积/中心偏移/宽高比门槛排除残余弧块与噪点。**不做贴边剔除**——
-    // 数字常常撑满整幅 ROI，贴边是正常现象而非外框。
+    // 剥环后 ROI 内数字是唯一的粗结构。按面积最大者选取（面积优先，
+    // 面积相同时取更靠近 ROI 中心者）；门槛：面积在 ROI 的 0.5%~60%、
+    // 质心偏移 ≤0.6×half、minAreaRect 长边/短边 ≤3.5，用于排除残余弧块
+    // 与噪点。**不做贴边剔除**——数字常常撑满整幅 ROI，贴边是正常现象而非外框。
     std::vector<std::vector<cv::Point>> digit_contours;
     cv::findContours(digit_bin, digit_contours,
                      cv::RETR_EXTERNAL,
@@ -1032,7 +1047,7 @@ bool VisionPipeline::recognizeRingDigit(
     // —— 真实相机数字与任一模板的距离都 ≈6，而 2/3 两个模板之间仅 1.2，
     // 判号实际被噪声主导（±30° 旋转就会把 2 判成 3）。改为把数字墨块与模板
     // 都按外接框归一化成 size² 二值位图，模板预生成多角度实例，取 IoU 最大者；
-    // 同一姿态下正确数字约 0.70、次优约 0.44（≈2 倍裕量），旋转由角度实例覆盖。
+    // 同一姿态下正确数字约 0.70、次优约 0.44（裕量约 0.26），旋转由角度实例覆盖。
     const int msize = std::max(8, cfg.mode1DigitMatchSize());
     cv::Mat norm_blob;
     {
@@ -1070,7 +1085,9 @@ bool VisionPipeline::recognizeRingDigit(
     // ---- 置信度门槛：最高分与次高分（不同数字）之差过小 → 拒答 --------------
     // 严重离焦/过曝时数字墨块会退化，正确数字的 IoU 可能被别的数字反超。
     // 实测正确样本的裕量最小 +0.083（中位 +0.164），而唯一一例误判裕量为
-    // −0.056：设一个很小的门槛就能把"判错"变成"没判出来"，宁可少报不可报错。
+    // 0.056（裕量 = 最高 IoU − 次高 IoU，恒为非负）：设一个很小的门槛
+    // （当前 digit_min_margin=0.07）就能把"判错"变成"没判出来"，
+    // 宁可少报不可报错。
     std::vector<double> ranked(score_by_digit, score_by_digit + 3);
     std::sort(ranked.begin(), ranked.end(),
               [](double a, double b) { return a > b; });
@@ -1096,8 +1113,14 @@ bool VisionPipeline::recognizeRingDigit(
 // ========================================================================
 // 模式2 —— 黑色圆柱检测
 // ========================================================================
-// 流水线：ROI → BGR→HSV → 黑色掩码 → 形态学 → 轮廓 →
-//          minAreaRect → 长宽比/面积过滤 → Kalman
+// 流水线：ROI → BGR→HSV → inRange(黑色) → MORPH_CLOSE(RECT) →
+//          findContours(RETR_EXTERNAL) → 逐个 minAreaRect →
+//          面积 ≥ min_area 且长宽比 ≥ aspect_ratio_threshold →
+//          取面积最大者 → Kalman(key=0, color_id=0)
+// 未检出：跟踪器未超时 → {type=3, color_id=0, 预测坐标}；
+//         超时/冷启动 → {type=0, color_id=0, 0, 0}；
+//         两者均受 serial.enable_no_target_frame 控制。
+// 调试图：黑色掩码。
 // ========================================================================
 std::vector<DetectionResult> VisionPipeline::processMode2(
     const cv::Mat& frame) {
@@ -1139,6 +1162,7 @@ std::vector<DetectionResult> VisionPipeline::processMode2(
                      cv::RETR_EXTERNAL,
                      cv::CHAIN_APPROX_SIMPLE);
 
+    // 无任何轮廓 → 统一出口（预测坐标 / 0 值包，受开关控制）
     if (contours.empty()) {
         const cv::Point2f pred =
             predictAndUpdate(0, cv::Point2f(0, 0), false);
@@ -1172,7 +1196,7 @@ std::vector<DetectionResult> VisionPipeline::processMode2(
     }
 
     if (best_center.x < 0) {
-        // 未找到有效圆柱
+        // 无轮廓同时满足面积与长宽比要求 → 统一出口
         const cv::Point2f pred =
             predictAndUpdate(0, cv::Point2f(0, 0), false);
         pushLostOrNoTarget(results, 0, 3, 0, pred, frame.cols, frame.rows);

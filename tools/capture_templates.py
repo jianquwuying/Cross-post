@@ -23,7 +23,9 @@
 #
 # 处理流程（与 visionpost 模板加载约定一致）：
 #   灰度 → 3x3 高斯 → Otsu(THRESH_BINARY) → 数字黑、背景白
-#   → 取最大轮廓（数字）→ 加 25% 边距裁剪 → 最长边归一化 240px → PNG
+#   → 取最大轮廓（数字）→ 加 25% 边距（另加 10px）裁剪 → 最长边归一化 240px → PNG
+#   注：visionpost 加载模板后会再按外接框缩放到 mode1.digit_match_size，
+#       因此模板文件的像素尺寸只影响存储分辨率，不影响匹配尺度。
 # ============================================================================
 
 import argparse
@@ -36,7 +38,8 @@ import numpy as np
 # 默认输出目录：项目根目录 templates/
 DEFAULT_OUT_DIR = Path(__file__).resolve().parent.parent / "templates"
 
-# 模板最长边归一化到该像素（Hu 矩尺度不变，尺寸不影响匹配）
+# 模板最长边归一化到该像素（运行时 visionpost 会再缩放到 digit_match_size，
+# 该值只决定模板文件的存储分辨率）
 TARGET_SIZE = 240
 
 SELECT_WIN = "Select digit: drag + SPACE/ENTER, c=cancel"
@@ -57,7 +60,7 @@ def process_digit(frame, roi):
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (3, 3), 0)
 
-    # Otsu 二值化：数字黑(0)、背景白(255)
+    # Otsu 二值化（按白底黑字假设）：数字黑(0)、背景白(255)
     _, th = cv2.threshold(gray, 0, 255,
                           cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
@@ -76,7 +79,7 @@ def process_digit(frame, roi):
             bx + bw >= th.shape[1] or by + bh >= th.shape[0]):
         warn = "警告：数字贴到框选边缘，可能被裁切，建议重新框选"
 
-    # 按数字外接框加 25% 边距裁剪（白底黑字）
+    # 按数字外接框加 25% 边距裁剪，另加 10 px 固定余量（保持白底黑字）
     margin = int(0.25 * max(bw, bh)) + 10
     x0 = max(0, bx - margin)
     y0 = max(0, by - margin)
@@ -132,9 +135,8 @@ def crop_loop(frame, digit_no, out_dir):
 def open_camera(index):
     """打开摄像头，返回 (cap, shape) 或 (None, None)。
 
-    优先 V4L2 后端：本机 OpenCV 默认的 GStreamer 后端在此 UVC 摄像头上
-    无法启动数据流（v4l2src Internal data stream error），
-    与 visionpost 直接使用 V4L2 ioctl 的方式一致。
+    优先使用 V4L2 后端（与 visionpost 的 CameraCapture 一致）；
+    打不开时回退 OpenCV 默认后端。
     """
     cap = cv2.VideoCapture(index, cv2.CAP_V4L2)
     if not cap.isOpened():

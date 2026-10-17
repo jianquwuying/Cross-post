@@ -1,5 +1,8 @@
 // ============================================================================
 // main.cpp  —  程序入口 + 线程编排
+// ----------------------------------------------------------------------------
+// 26年第十二届工程实践与创新大赛（参赛作品）
+// 树莓派 5 实时视觉终端：CameraThread / ProcessThread / SerialThread 三线程。
 // ============================================================================
 // 职责：
 //   1. 加载 YAML 配置
@@ -70,7 +73,8 @@ static void cameraLoop(CameraCapture& camera,
                        int target_fps) {
     LOG_INFO("CameraThread 已启动");
 
-    // 帧间隔（微秒），视频回放时用于模拟真实摄像头帧率
+    // 帧间隔（微秒）：摄像头采集本身受限；视频回放读得过快时用它补齐，
+    // 使 CameraThread 不超过配置帧率
     auto frame_interval_us = std::chrono::microseconds(1000000 / target_fps);
 
     // ---- 视频录制器 ---------------------------------------------------
@@ -124,7 +128,7 @@ static void cameraLoop(CameraCapture& camera,
 
         fps_counter.tick();
 
-        // 帧率控制：视频回放时若读取过快，等待以模拟真实摄像头帧率
+        // 帧率控制：本帧循环快于配置间隔时补齐等待
         auto t_loop_end = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
                            t_loop_end - t_loop_start);
@@ -155,12 +159,12 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
                         const std::string& window_name) {
     LOG_INFO("ProcessThread 已启动");
 
-    double camera_fps     = 0.0;
-    double process_fps    = 0.0;
-    double latency_ms     = 0.0;
-    int    current_mode   = 3;
-    size_t queue_depth    = 0;
-    bool   serial_ok      = true;  // 占位
+    double camera_fps     = 0.0;   // 未接入 CameraThread 的 FPS，该值恒为 0.0
+    double process_fps    = 0.0;   // 由本线程的 fps_counter 每秒刷新
+    double latency_ms     = 0.0;   // 捕获到处理结束的延迟
+    int    current_mode   = 3;     // 初始显示为模式3（空闲）
+    size_t queue_depth    = 0;     // 发送队列深度
+    bool   serial_ok      = true;  // 占位：状态栏固定显示 OK，未反映真实串口状态
 
     // ---- 发送节流状态 ------------------------------------------------
     auto last_send_time = std::chrono::steady_clock::now();
@@ -191,7 +195,7 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
         auto now = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                            now - last_send_time).count();
-        // 模式变化 → 立即抢断发送（TARGET 位已忽略，只看 MODE）
+        // 模式变化且有结果 → 立即抢断发送（只比较 MODE；TARGET 位已不参与判断）
         bool mode_changed =
             (static_cast<uint8_t>(current_mode) != last_sent_mode);
 
@@ -203,8 +207,9 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
             // 间隔已到：允许发送
             should_send = true;
         }
-        // 无结果（仅 serial.enable_no_target_frame=false 时可能出现）
-        // → 不发送，不更新计时器（保证目标出现时立即发送）
+        // 无结果（开关关闭时：模式3 空闲，或模式0/1/2 本帧既无检出也无预测；
+        // 开关开启时也可能来自异常路径：ROI 裁剪为空、模式1 模板加载失败等）
+        // → 不发送，也不更新计时器（保证目标出现时立即发送）
 
         if (should_send) {
             for (const auto& r : results) {
@@ -237,7 +242,8 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
                 cv::rectangle(display_frame, roi_rect,
                               cv::Scalar(0, 255, 0), 1);
 
-                // 模式1：绘制本帧检测到的所有圆环（TARGET 已取消，统一黄色）
+                // 模式1：绘制本帧完成数字识别的所有圆环
+                // （统一黄色，并标注识别出的环号 Ring N）
                 for (const auto& ring : pipeline.getLastDetectedRings()) {
                     const cv::Scalar ring_color(0, 255, 255);
                     const cv::Point rc(cvRound(ring.center.x),
@@ -254,14 +260,14 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
                                 0.5, ring_color, 1);
                 }
 
-                // 绘制检测结果（跳过 target_type=0 的无目标帧；
-                // 再跳过 (0,0) 的零位包 —— 非 TARGET 圆环只报"看到了"不给坐标）
+                // 绘制检测结果：先跳过 target_type=0 的无目标帧，
+                // 再跳过坐标为 (0,0) 的包（没有可绘制的有效坐标）
                 for (const auto& r : results) {
                     if (r.target_type == 0) continue;
                     if (r.x == 0 && r.y == 0) continue;
                     cv::Point pt(r.x, r.y);
-                    // 圆环（target_type=2）= 红色，与 TARGET 圈一致；
-                    // 其余类型保持黄色
+                    // 圆环（target_type=2）= 红色；
+                    // 颜色物块（1）与圆柱（3）保持黄色
                     cv::Scalar color = (r.target_type == 2)
                                        ? cv::Scalar(0, 0, 255)
                                        : cv::Scalar(0, 255, 255);
@@ -284,6 +290,8 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
                 }
 
                 // ---- 状态栏（左上角）-----------------------------------
+                // 依次显示：Cam FPS / Process FPS / Latency / Mode /
+                //           Queue / Serial（Serial 为占位，恒显示 OK）
                 int y_offset = 25;
                 int x_pos    = 10;
                 auto putStat = [&](const std::string& text,
@@ -335,6 +343,8 @@ static void processLoop(ThreadSafeFrameBuffer<FrameData>& frame_buffer,
         }
 
         // ---- 二值化调试窗口 ------------------------------------------
+        // 内容随当前模式：模式0 彩色掩码合成 / 模式1 数字 ROI 位图 /
+        // 模式2 黑色掩码；模式3 不更新，保留上一模式最后一帧
         if (show_binary) {
             cv::Mat debug_img = pipeline.getLastDebugImage();
             if (!debug_img.empty()) {
@@ -359,7 +369,7 @@ static void serialLoop(SerialPort& serial,
     pfd.events = POLLIN;
 
     while (running_) {
-        // ---- 接收模式命令 ----------------------------------------------
+        // ---- 接收模式命令（TARGET 位忽略，只应用 MODE）------------------
         int ret = poll(&pfd, 1, 10);   // 10 ms poll 超时
         if (ret > 0 && (pfd.revents & POLLIN)) {
             // 排空所有可用命令

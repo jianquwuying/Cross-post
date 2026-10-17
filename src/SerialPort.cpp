@@ -130,8 +130,9 @@ bool SerialPort::configurePort(int baudrate) {
 // ---------------------------------------------------------------------------
 // 协议：0xCD  0x01  MODE  TARGET  0xDC
 // 搜寻 0xCD 起始字节；找到后读取后续 4 字节。
-// 帧有效则返回 MODE；**TARGET 位保留但被忽略**（不校验、不使用）。
-// 任何字节错误/缺失 → 重置并继续搜寻 0xCD。
+// 校验 buf[0]==0x01、buf[3]==0xDC 且 MODE≤3；帧有效则返回 MODE。
+// **TARGET 位保留但被完全忽略**（不校验、不使用，仅用于调试日志）。
+// 任何字节错误/缺失 → 返回 nullopt，下一次调用重新搜寻帧头。
 // ---------------------------------------------------------------------------
 std::optional<uint8_t> SerialPort::readCommand() {
     uint8_t byte;
@@ -186,7 +187,7 @@ std::optional<uint8_t> SerialPort::readCommand() {
 // ---------------------------------------------------------------------------
 // 协议：0xCD  0x06  TargetType  Color  X_H  X_L  Y_H  Y_L  0xDC
 // 坐标：uint16_t，大端序。
-// 使用 select() 设置 5 ms 写入超时。
+// 使用 select() 设置 5 ms 写入超时；失败返回 false（调用方丢包，不重试）。
 // ---------------------------------------------------------------------------
 bool SerialPort::writeResult(uint8_t target_type, uint8_t color,
                              uint16_t x, uint16_t y) {
@@ -206,10 +207,11 @@ bool SerialPort::writeResult(uint8_t target_type, uint8_t color,
               buf[0], buf[1], buf[2], buf[3], buf[4],
               buf[5], buf[6], buf[7], buf[8]);
 
+    // 调试日志：无目标帧与坐标恰为原点的圆环包只打印标记，发送内容不变
     if (target_type == 0) {
         LOG_DEBUG("串口发送: 无目标帧 (Color=%d)", color);
     } else if (target_type == 2 && x == 0 && y == 0) {
-        LOG_DEBUG("串口发送: 非 TARGET 圆环零位包 (Color=%d)", color);
+        LOG_DEBUG("串口发送: 圆环坐标恰为原点 (Color=%d)", color);
     }
 
     // 非阻塞检查：fd 是否可写？
